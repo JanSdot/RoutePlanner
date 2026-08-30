@@ -1030,26 +1030,55 @@ round_trip-Ungenauigkeit - zurückgegebene Distanz muss nicht der angeforderten 
 volle Testsuite (74/74) grün. Live mit den exakten gemeldeten Parametern erneut verifiziert:
 40,3 km/97 min statt vorher 24,4 km/58 min - deutlich näher am 120-min-Ziel.
 
-**Verbleibende, separate Ungenauigkeit (nicht Teil dieses Fixes):** die angezeigte "Geschätzte
-Zeit" stammt direkt aus GraphHoppers eigener `time`-Antwort (berechnet mit dem festen
-`limit_to: 25`-Profil-Speed, siehe 6.17), NICHT aus einer Neuberechnung über
+**Update (2026-08-31, ebenfalls behoben):** die zunächst als separat/größerer Aufwand
+eingestufte Ungenauigkeit (siehe unten) wurde direkt im Anschluss ebenfalls behoben - siehe
+6.24.
+
+**Ursprünglich verbleibende, separate Ungenauigkeit (jetzt behoben, siehe 6.24):** die
+angezeigte "Geschätzte Zeit" stammte direkt aus GraphHoppers eigener `time`-Antwort (berechnet
+mit dem festen `limit_to: 25`-Profil-Speed, siehe 6.17), NICHT aus einer Neuberechnung über
 `PowerSpeedModel`/das tatsächliche Fahrerprofil. Bei Rennrad-typischen Profilen (FTP~250W/75kg)
-liegt GA1-Tempo (~24 km/h) nah genug an den flachen 25 km/h, dass der Unterschied kaum auffällt -
+liegt GA1-Tempo (~24 km/h) nah genug an den flachen 25 km/h, dass der Unterschied kaum auffiel -
 bei einem sehr leichten/leistungsschwachen Profil wie im gemeldeten Fall (~21 km/h GA1-Tempo)
-zeigt sich die Lücke deutlich (97 statt der eigentlich angepeilten ~120 min). Echte Behebung
-würde eine Neuberechnung der Gesamtzeit über die tatsächliche finale Routengeometrie mit dem
-eigenen physikbasierten Modell erfordern - deutlich größerer Eingriff, bewusst NICHT Teil
-dieses Fixes, siehe Abschnitt 7.
+zeigte sich die Lücke deutlich (97 statt der eigentlich angepeilten ~120 min).
+
+## 6.24 Phase 2 — Bugfix: "Geschätzte Zeit" nutzt jetzt das eigene physikbasierte Modell (durchgeführt)
+
+Direkter Nachtrag zu 6.23, noch am selben Tag umgesetzt. `EstimatedTotalTime` kam bisher direkt
+aus `finalRoute.Time` (GraphHoppers eigene, fest auf 25 km/h gesetzte Schätzung, siehe 6.17) -
+unabhängig vom tatsächlichen Fahrerprofil.
+
+**Fix:** Neue Methode `EstimateTotalTime` rekonstruiert die Gesamtzeit über `PowerSpeedModel`:
+Effort-Schritte MIT gefundenem Korridor nutzen dessen TATSÄCHLICHE Länge (kann durch die
+Fallback-Eskalation von der ursprünglichen Schätzung abweichen). Alle übrigen Schritte (ruhige
+Blöcke UND Effort-Schritte ohne gefundenen Korridor) teilen sich die tatsächlich VERBLEIBENDE
+Distanz (`finalRoute.DistanceMeters` abzüglich aller Korridor-Längen) proportional zu ihrem
+ursprünglich geschätzten Anteil auf - das fängt GraphHoppers round_trip-Ungenauigkeit (die
+tatsächliche Distanz weicht oft von der angeforderten ab, siehe 6.23) korrekt mit ein, statt
+naiv unveränderte Schätzungen aufzusummieren. `RefineRoughLoopAsync` gibt dafür zusätzlich die
+in der letzten Iteration verwendeten Steigungs-/Windwerte pro Schritt zurück, damit dieselben
+Umgebungsbedingungen konsistent weiterverwendet werden. `CheckApproachBudget` (4.4/6.23)
+vergleicht jetzt gegen diese neue Schätzung statt gegen `finalRoute.Time`.
+
+Getestet: bestehender Test `ApproachBudgetExceeded_AddsWarning` angepasst (simuliert jetzt einen
+zu langen KORRIDOR statt eines künstlich hohen `finalRoute.Time`-Werts, da Letzteres nicht mehr
+gelesen wird), volle Testsuite (74/74) grün. Live mit den exakten gemeldeten Parametern erneut
+verifiziert: **02:00:16 (120 min 16s) statt vorher 97 min** - praktisch exakt das 120-min-Ziel.
+Die dabei gewählte Distanz (30 km statt der zuvor grob abgeschätzten ~42 km) erklärt sich durch
+echten, in dieser Berechnung bereits berücksichtigten Gegenwind (siehe 6.22), den eine grobe
+Handrechnung ohne Windmodell nicht erfasst hätte. Zusätzlich mit einem normalen Fahrerprofil
+(250 W/75 kg, gemischter Ruhe-/Effort-Plan) gegengeprüft: Ergebnis bleibt im erwarteten
+Anfahrt-Budget-Rahmen, mit korrekter Korridor-Lockerungs-Warnung.
 
 ## 7. Offene Punkte
 
-- **"Geschätzte Zeit" spiegelt nicht das tatsächliche Fahrerprofil wider** (siehe 6.23) - kommt
-  direkt aus GraphHoppers eigener, fest auf 25 km/h gesetzter `time`-Antwort statt aus einer
-  Neuberechnung über `PowerSpeedModel`. Faellt bei Rennrad-typischen Profilen kaum auf (nah an
-  25 km/h), bei sehr leichten/leistungsschwachen (oder sehr starken) Profilen aber deutlich.
-  Echte Behebung braeuchte eine Neuberechnung der Gesamtzeit ueber die tatsaechliche finale
-  Routengeometrie mit dem eigenen physikbasierten Modell statt GraphHoppers Wert einfach zu
-  uebernehmen.
+- **Windschatten/Gruppenfahrt** - vom Nutzer vorgeschlagen (2026-08-31), noch keine konkrete
+  Umsetzungsidee. Naheliegender Ansatz: Windschatten in der Gruppe reduziert effektiv den
+  Luftwiderstand (`RiderProfile.DragAreaCdA`), typischerweise auf ca. 70-90% des Solo-Werts je
+  nach Position/Gruppengroesse - liesse sich als "fahre ich in der Gruppe?"-Schalter oder
+  Gruppengroesse-Eingabe umsetzen, die `PowerSpeedModel`s CdA entsprechend herunterskaliert.
+  Haengt eng mit der Windmodellierung (6.22) und der Zeitschaetzung (6.23) zusammen, da alle
+  drei denselben physikbasierten Geschwindigkeits-Kern beruehren.
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,
   brauchen echte Trainingsfahrten zur Kalibrierung — explizit Teil von Phase 3, nicht vorher
   lösbar)
