@@ -149,7 +149,7 @@ export default function App() {
   return (
     <div className="app-layout">
       <aside className="sidebar">
-        <h1>Trainingsrouten-Planer</h1>
+        <h1>WattLoop</h1>
 
         <form onSubmit={handleSubmit}>
           <label>
