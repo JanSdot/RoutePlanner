@@ -17,7 +17,13 @@ einmal einrichtet.
    da `CorridorIndex.Load` dieselbe Datenmenge im Speicher hält.
 4. Deploy starten. Beide Docker-Builds laden bei jedem Build den Berlin+Brandenburg-OSM-Extrakt
    frisch von Geofabrik (~380 MB) und schneiden ihn per `osmium` zu — das dauert mehrere Minuten
-   pro Build, hält das Repo aber frei von großen Binärdateien.
+   pro Build, hält das Repo aber frei von großen Binärdateien. **Wichtig:** GraphHopper importiert
+   den Extrakt beim Container-**Start** (blockiert dabei den `/health`-Endpunkt, nicht Teil des
+   Docker-Builds selbst) - die `urban_density`-Klassifizierung (siehe CONCEPT.md 6.11) braucht
+   dafür lokal gemessen zusätzlich ca. 5-6 Minuten (city_radius=1500m über ~1,5 Mio. Knoten) on top
+   der sonstigen Importzeit. Falls Render den Deploy deswegen als fehlgeschlagen markiert (Health
+   Check Timeout), im Render-Dashboard unter dem GraphHopper-Service die Health-Check-Grace-Period
+   entsprechend erhöhen.
 5. Nach dem ersten erfolgreichen Deploy: die tatsächlich zugewiesenen `*.onrender.com`-URLs im
    Render-Dashboard prüfen. Falls einer der Servicenamen (z. B. `trainingrouteplanner-api`)
    bereits von jemand anderem belegt war, bekommt der Service eine abweichende URL (mit

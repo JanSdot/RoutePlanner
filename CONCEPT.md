@@ -230,9 +230,26 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
   hinterlegen, unabhängig vom automatischen Score aus 3.4)
 - Straßenauslastung/Verkehr zur geplanten Trainingsuhrzeit in die Streckenbewertung einbeziehen
   (Nutzer gibt an, wann trainiert werden soll; stark befahrene Straßen zu der Uhrzeit werden
-  gemieden). OSM selbst führt keine Verkehrsvolumen-/Stauzeitdaten — bräuchte eine externe
-  Verkehrsdaten-API (z. B. TomTom Traffic, HERE Traffic; meist kostenpflichtig/kontingentiert)
-  oder ersatzweise eine grobe Heuristik über Straßenklasse + Tageszeit ohne Echtzeitdaten
+  gemieden). OSM selbst führt keine Verkehrsvolumen-/Stauzeitdaten. Geprüfte Optionen:
+  - TomTom/HERE Traffic: kostenpflichtig, Lizenzbedingungen erlauben meist nur Anzeige in einem
+    eigenen Kartenkontext, keine Weiterverarbeitung in einem eigenen Scoring-Algorithmus
+  - Google Maps Directions/Routes API (`departure_time`-Parameter): technisch möglich, aber aus
+    denselben Lizenzgründen abgelehnt, plus kostenpflichtig pro Anfrage - unser
+    Untergrund-Vermeidungs-Retry (6.9) macht schon bis zu 5 GraphHopper-Anfragen pro Route, das
+    würde sich mit einer bezahlten API schnell summieren
+  - **BASt (Bundesanstalt für Straßenwesen):** kostenlose, offizielle stündliche
+    Verkehrszähldaten (Datenlizenz Deutschland Namensnennung 2.0) von ca. 2000 Dauerzählstellen -
+    aber nur für Autobahnen und Bundesstraßen. Deckt sich kaum mit den kleineren Straßen, auf
+    denen unser Korridor-Scoring (3.4) ohnehin bevorzugt routet - vermutlich zu geringe
+    Abdeckung für unseren tatsächlichen Anwendungsfall, daher nicht umgesetzt
+  - OpenTraffic (World Bank/Mapzen/Conveyal, 2015-2017): offenbar seit 2017 nicht mehr
+    weiterentwickelt (Mapzen als Trägerorganisation 2018 eingestellt), keine Hinweise auf einen
+    aktuell laufenden Datenfeed - ohnehin auf Entwicklungsländer ohne kommerzielle Verkehrsdaten
+    ausgerichtet, vermutlich keine Berlin/Brandenburg-Abdeckung
+  - Ersatzweise: grobe Heuristik über Straßenklasse + Tageszeit ohne jede externe Datenquelle -
+    kostenlos, aber deutlich ungenauer als echte Zähldaten
+  - Teilweise durch 6.11 (städtische Ballungsgebiete meiden) bereits indirekt adressiert, da
+    hohe Verkehrsdichte und `urban_density == CITY` stark korrelieren dürften
 - TCX-Export mit typisierten `<CoursePoint>`-Elementen (z. B. "Segment Start"/"Segment End" statt
   generischer Icons) als kleine Verbesserung zu den bereits vorhandenen benannten GPX-Wegpunkten
   aus Abschnitt 6.5 — reine Icon-/Kategorisierungs-Verbesserung, kein neues Verhalten
@@ -527,6 +544,41 @@ betroffen, da GraphHopper gesperrte Wege dadurch gar nicht mehr als Routing-Opti
 Encoded Values werden beim Graph-Import fest geschrieben (siehe 6.8) - lokaler Graph-Cache musste
 daher einmalig gelöscht und neu importiert werden. Auf Render nicht nötig, da der Graph bei jedem
 Docker-Build ohnehin komplett frisch importiert wird (siehe DEPLOY.md).
+
+## 6.11 Phase 2 — Städtische Ballungsgebiete meiden (durchgeführt)
+
+Auslöser: Nutzer fragte nach Verkehrsvermeidung generell (Abschnitt 7 dokumentiert die
+BASt/Google-Maps-Recherche dazu - beides verworfen, siehe dort) und konkret danach, ob wir
+"die Umgebung" prüfen können, um Strecken durch die Stadt zu vermeiden. GraphHopper hat dafür
+bereits eine eingebaute Funktion: die `urban_density`-Encoded-Value (`RURAL`/`RESIDENTIAL`/`CITY`)
+klassifiziert Wege automatisch anhand der Straßen-/Kreuzungsdichte aus den OSM-Daten selbst -
+kein eigenes Parsen von Landnutzungs-Polygonen nötig, gleiches Muster wie `surface` (6.8) und
+`bike_access` (6.10).
+
+Nutzer entschied sich für **fest im Profil verankert statt konfigurierbar** (anders als die
+Untergrund-Limits aus 6.9): `custom_model` wertet `urban_density == CITY` jetzt mit
+`multiply_by: "0.5"` ab - bewusst eine Abwertung, kein Ausschluss (`multiply_by: "0"`), da der
+Startpunkt (Sportforum Berlin) selbst in einem Stadtrandgebiet liegt und ein hartes Verbot die
+Routenerstellung dort unmöglich machen könnte.
+
+**Stolperstein beim Aktivieren:** `graph.urban_density.threads` hat keinen brauchbaren Default -
+ohne expliziten Wert (>= 1) stürzt der komplette Import mit `IllegalArgumentException` in
+`ForkJoinPool`-Konstruktion ab (`threads=0` ist ungültige Parallelität). In beiden Config-Dateien
+`graph.urban_density.threads: 4` ergänzt.
+
+**Weiterer wichtiger Fund:** Die City-Klassifizierung (`city_radius=1500m` Default) ist spürbar
+langsam - beim lokalen Reimport hat sie allein ca. 5,5 Minuten gebraucht (bei ~1,5 Mio. Knoten in
+unserem 60-km-Extrakt), zusätzlich zur sonstigen Importzeit. Das passiert beim GraphHopper-
+Container-**Start** (blockiert `/health` so lange), nicht beim Docker-Build - siehe DEPLOY.md für
+den Hinweis zur Render-Health-Check-Grace-Period.
+
+Verifiziert: `/info` zeigt `urban_density` mit den erwarteten drei Werten. Eine Testroute mitten
+in Berlin-Mitte (Alexanderplatz-Gegend) wird korrekt durchgängig als `city` klassifiziert
+(bestätigt, dass die Klassifizierung tatsächlich greift). Die Runde ab Sportforum Berlin bleibt
+bereits ohne jede Anpassung komplett im `rural`-Bereich - kein Widerspruch, da der Standort selbst
+am Stadtrand liegt und die Route von dort aus nie in dichtere Gebiete musste; die
+Abwertungs-Regel wirkt also erst, wenn eine Route tatsächlich versucht, durch dichter besiedeltes
+Gebiet zu führen.
 
 ## 7. Offene Punkte
 

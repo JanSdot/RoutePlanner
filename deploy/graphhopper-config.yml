@@ -2,7 +2,10 @@ graphhopper:
   datareader.file: ./data/sportforum-60km.osm.pbf
   graph.location: ./graph-cache
   import.osm.ignored_highways: ""
-  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope,bike_access
+  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope,bike_access,urban_density
+  # Ohne explizites threads>=1 stuerzt der Import ab (ForkJoinPool mit parallelism=0 wirft
+  # IllegalArgumentException) - GraphHopper hat hierfuer keinen brauchbaren Default.
+  graph.urban_density.threads: 4
   graph.elevation.provider: srtm
   graph.elevation.cache_dir: ./elevation-cache
   graph.elevation.dataaccess: MMAP
@@ -19,6 +22,12 @@ graphhopper:
           # hier nicht, siehe CONCEPT.md Abschnitt 6.10).
           - if: "!bike_access"
             multiply_by: "0"
+          # Staedtische Ballungsgebiete abwerten, nicht ausschliessen - der Startpunkt (Sportforum
+          # Berlin) liegt selbst in einem Stadtrandgebiet, ein hartes Verbot koennte die
+          # Routenerstellung in dichteren Startlagen unmoeglich machen. Siehe CONCEPT.md
+          # Abschnitt 6.11.
+          - if: "urban_density == CITY"
+            multiply_by: "0.5"
         speed:
           - if: "true"
             limit_to: "25"
