@@ -225,20 +225,30 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
   Preismodell, (3) Migration der Sperr-Bereiche (6.18) von rein Frontend-Request-State zu
   persistierten, pro-Nutzer ODER pro-Verein geltenden Ressourcen - eine Verein-weite Sperrung
   muss dabei von einem Verantwortlichen freigegeben werden (Status pending/approved), eine
-  Nutzer-eigene Sperrung gilt sofort. Grundvoraussetzung fuer alle drei Stufen: die App hat
-  aktuell KEINERLEI Datenbank/Persistenz (alles zustandslos pro Anfrage, PBF-Daten einmalig
-  beim Start ins RAM geladen) - das muesste als Erstes eingefuehrt werden (z. B. verwaltetes
-  Postgres bei Render).
+  Nutzer-eigene Sperrung gilt sofort.
+
   **Auth-Entscheidung (2026-08-30):** ASP.NET Core Identity (selbst gehostet, in der
-  bestehenden API) plus die offiziellen Google- und Microsoft-OAuth-Pakete, dazu klassische
-  E-Mail/Passwort-Registrierung als eigenes Subsystem (Passwort-Hashing, Reset-Flow etc.).
-  Apple Sign-In bewusst NICHT eingeplant, da es einen aktiven kostenpflichtigen Apple Developer
-  Account voraussetzt. Diskutierte Alternativen: ein selbst gehostetes Keycloak (passt gut zum
-  "kostenlos/selbst gehostet"-Muster des Projekts, aber ein weiterer zu betreibender Dienst mit
-  eigener DB/eigenem Deployment) und ein SaaS-Anbieter wie Auth0/Clerk (weniger Code, aber
-  wiederkehrende Kosten ab einer gewissen Nutzerzahl UND nimmt das Vereins-Rollenmodell ohnehin
-  nicht ab). Keycloak bleibt bewusst als spaetere Option im Hinterkopf, falls der Funktionsumfang
-  (mehr Provider, MFA, mehrere Client-Apps mit gemeinsamem Login) den Mehraufwand rechtfertigt.
+  bestehenden API), fuer den ersten Wurf NUR klassische E-Mail/Passwort-Registrierung
+  (Passwort-Hashing, Reset-Flow etc. als eigenes Subsystem) - Google-, Microsoft- UND
+  Apple-Login wurden bewusst zurueckgestellt, um die erste Version kleiner zu halten (Apple
+  zusaetzlich, weil es einen kostenpflichtigen Apple Developer Account voraussetzt). Diskutierte
+  Alternativen: ein selbst gehostetes Keycloak (passt gut zum "kostenlos/selbst gehostet"-Muster
+  des Projekts, aber ein weiterer zu betreibender Dienst mit eigener DB/eigenem Deployment) und
+  ein SaaS-Anbieter wie Auth0/Clerk (weniger Code, aber wiederkehrende Kosten ab einer gewissen
+  Nutzerzahl UND nimmt das Vereins-Rollenmodell ohnehin nicht ab). Keycloak bleibt bewusst als
+  spaetere Option im Hinterkopf, falls der Funktionsumfang (mehr Provider, MFA, mehrere
+  Client-Apps mit gemeinsamem Login) den Mehraufwand rechtfertigt.
+
+  **DB-Entscheidung (2026-08-30):** Postgres bei **Neon.tech** (kostenloser Tier). Die App hat
+  aktuell KEINERLEI Datenbank/Persistenz (alles zustandslos pro Anfrage, PBF-Daten einmalig beim
+  Start ins RAM geladen) - das ist der erste konkrete Umsetzungsschritt. Verworfene
+  Alternativen: Render's eigenes verwaltetes Postgres (kostenlose Variante laeuft nach 30 Tagen
+  ab, danach 14 Tage Gnadenfrist, dann Loeschung - fuer echte Nutzerdaten ungeeignet; bezahlt ab
+  7$/Monat); ein selbst gehosteter Postgres- ODER SQLite-Container auf Render (Render's
+  Dateisystem ist fluechtig, ein persistenter Zustand braucht zwingend einen bezahlten Disk -
+  kostet aehnlich wie Render's verwaltetes Postgres, aber ohne automatische Backups, und ein
+  Disk bindet den Dienst dauerhaft an eine einzelne Instanz, verhindert also jede spaetere
+  horizontale Skalierung).
 - A-nach-B-Routing (statt nur Rundkurs)
 - **Windmodellierung** (geplant, noch nicht umgesetzt) - Scope bewusst auf die Zeitschätzung
   begrenzt, die Streckenführung selbst bleibt unverändert. Datenquelle: Open-Meteo (kostenlos,
