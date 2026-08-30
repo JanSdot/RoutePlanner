@@ -1070,6 +1070,40 @@ Handrechnung ohne Windmodell nicht erfasst hätte. Zusätzlich mit einem normale
 (250 W/75 kg, gemischter Ruhe-/Effort-Plan) gegengeprüft: Ergebnis bleibt im erwarteten
 Anfahrt-Budget-Rahmen, mit korrekter Korridor-Lockerungs-Warnung.
 
+## 6.25 Phase 2 — Login-Pflicht + gespeichertes Fahrerprofil (durchgeführt)
+
+Vom Nutzer direkt beim vorherigen Bugfixing angestoßen: Login soll notwendig sein, um WattLoop
+überhaupt nutzen zu können - und FTP/Gewicht/Sprint-Watt sollen ins Konto-Profil aufgenommen
+werden (erster konkreter Nutzen eines eingeloggten Zustands, siehe Phase-4-Backlog
+"Mehrbenutzerfähigkeit/Auth/Vereine").
+
+**Backend:** Neue Entität `UserRiderProfile` (1:1 pro Nutzer, `UserId` als Primary Key,
+`TrainingRoutePlanner.Data`), Migration erstellt und live gegen Neon angewendet. `GET /profile`
+(404 wenn noch nichts gespeichert - kein Fehlerzustand) und `PUT /profile` (Upsert), beide
+`.RequireAuthorization()`. ALLE app-funktionalen Endpunkte (`/route`, `/workout/build`,
+`/junctions`) jetzt ebenfalls `.RequireAuthorization()` - Login ist damit nicht nur eine
+Frontend-Gate-Kosmetik, sondern serverseitig durchgesetzt. `/health` bleibt bewusst offen
+(Render-Health-Check).
+
+**Frontend:** Kein Zugriff auf die App ohne Login mehr - `App.tsx` zeigt ohne gültiges Token
+NUR noch ein zentriertes Login/Registrierungs-Formular (`.auth-gate`), nicht mehr die
+Sidebar/Karte. Ein kurzer `authInitializing`-Zwischenzustand verhindert ein Aufblitzen des
+Login-Formulars, waehrend ein gespeichertes Token noch gegen `/auth/me` geprüft wird. Nach
+Login/Registrierung wird automatisch das gespeicherte Profil geladen und in die
+FTP/Gewicht/Sprint-Watt-Felder übernommen (falls vorhanden); bei jeder erfolgreichen
+Routenberechnung wird das Profil mit den aktuell eingegebenen Werten automatisch aktualisiert
+(kein separater "Speichern"-Button - nicht kritisch/nicht blockierend, ein Fehlschlag verwirft
+nicht die gerade berechnete Route).
+
+Getestet: volle Backend-Testsuite (74/74) unverändert grün (betroffene Endpunkte sind reine
+Minimal-API-Verdrahtung, nicht in den bestehenden RouteConstructionService-Unit-Tests
+abgedeckt). Live gegen die echte Neon-DB verifiziert: `/junctions` ohne Token 401, mit Token
+200; `/profile` GET vor erstem Speichern 404, PUT dann GET liefert die gespeicherten Werte
+korrekt zurück. Im echten Chrome bestätigt: kein Zugriff auf die App ohne Login (nur das
+Formular sichtbar), nach Registrierung volle App nutzbar, individuelle FTP/Gewicht-Werte (199/
+64) übersteigen einen Reload unverändert (aus dem gespeicherten Profil geladen, nicht auf die
+Standardwerte zurückgefallen), Abmelden führt zurück zum Login-Gate.
+
 ## 7. Offene Punkte
 
 - **Windschatten/Gruppenfahrt** - vom Nutzer vorgeschlagen (2026-08-31), noch keine konkrete
