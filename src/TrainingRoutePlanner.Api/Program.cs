@@ -1,8 +1,13 @@
 using System.Globalization;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using TrainingRoutePlanner.Data;
 using TrainingRoutePlanner.Domain;
@@ -93,8 +98,38 @@ var databaseUrl = Environment.GetEnvironmentVariable("DATABASE_URL")
 builder.Services.AddDbContext<WattLoopDbContext>(options =>
     options.UseNpgsql(ToNpgsqlConnectionString(databaseUrl)));
 
-builder.Services.AddIdentityCore<IdentityUser>()
+builder.Services.AddIdentityCore<IdentityUser>(options =>
+{
+    // Ohne das koennten zwei Konten dieselbe E-Mail-Adresse tragen - bei einem
+    // E-Mail-basierten Login (siehe /auth/login) waere das mehrdeutig. Identity's Default ist
+    // false, weil Identity urspruenglich Username-basiertes Login als Grundfall annimmt.
+    options.User.RequireUniqueEmail = true;
+})
     .AddEntityFrameworkStores<WattLoopDbContext>();
+
+// Reines Bearer-Token-Login statt Cookies: Frontend (SPA) und API laufen auf unterschiedlichen
+// Origins (siehe FrontendCorsPolicy) - Cross-Site-Cookies bräuchten SameSite=None + genaues
+// Domain-Handling, ein Bearer-Token im Authorization-Header ist fuer dieses Setup deutlich
+// simpler UND ist bereits von AllowAnyHeader() in der CORS-Policy abgedeckt.
+var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
+    ?? throw new InvalidOperationException(
+        "Jwt:SigningKey fehlt (lokal per 'dotnet user-secrets set Jwt:SigningKey ...', " +
+        "auf Render per Umgebungsvariable Jwt__SigningKey).");
+var jwtSigningKeyBytes = Encoding.UTF8.GetBytes(jwtSigningKey);
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = false,
+            ValidateAudience = false,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(jwtSigningKeyBytes),
+            ValidateLifetime = true,
+        };
+    });
+builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
@@ -148,6 +183,8 @@ if (app.Environment.IsDevelopment())
     app.UseHttpsRedirection();
 }
 app.UseCors(FrontendCorsPolicy);
+app.UseAuthentication();
+app.UseAuthorization();
 
 // App ist bewusst oeffentlich ohne Auth (siehe DEPLOY.md), soll aber nicht in Suchmaschinen
 // auftauchen und keine automatisierten Crawler/Scraper bedienen. X-Robots-Tag ist das
@@ -172,6 +209,43 @@ app.Use(async (context, next) =>
     }
     await next();
 });
+
+// E-Mail dient direkt als Identity-Username (kein separater Anzeigename noetig fuer Stufe 1
+// des Konten-Features, siehe CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine").
+app.MapPost("/auth/register", async (RegisterRequest request, UserManager<IdentityUser> userManager) =>
+{
+    var user = new IdentityUser { UserName = request.Email, Email = request.Email };
+    var result = await userManager.CreateAsync(user, request.Password);
+    if (!result.Succeeded)
+        return Results.BadRequest(result.Errors.Select(e => e.Description));
+    return Results.Ok();
+})
+.WithName("Register");
+
+app.MapPost("/auth/login", async (LoginRequest request, UserManager<IdentityUser> userManager) =>
+{
+    var user = await userManager.FindByEmailAsync(request.Email);
+    if (user is null || !await userManager.CheckPasswordAsync(user, request.Password))
+        return Results.Unauthorized();
+
+    var claims = new[]
+    {
+        new Claim(ClaimTypes.NameIdentifier, user.Id),
+        new Claim(ClaimTypes.Email, user.Email!),
+    };
+    var credentials = new SigningCredentials(new SymmetricSecurityKey(jwtSigningKeyBytes), SecurityAlgorithms.HmacSha256);
+    // 30 Tage bewusst ohne Refresh-Token-Mechanismus - fuer den aktuellen Umfang (Stufe 1,
+    // reines E-Mail/Passwort-Login) reicht ein simples langlebiges Token, ein Refresh-Flow waere
+    // hier verfrueht (siehe CONCEPT.md: Stufe 2/3 kommen erst noch).
+    var token = new JwtSecurityToken(claims: claims, expires: DateTime.UtcNow.AddDays(30), signingCredentials: credentials);
+    return Results.Ok(new AuthResponse(new JwtSecurityTokenHandler().WriteToken(token), user.Email!));
+})
+.WithName("Login");
+
+app.MapGet("/auth/me", (ClaimsPrincipal principal) =>
+    Results.Ok(new { email = principal.FindFirstValue(ClaimTypes.Email) }))
+    .RequireAuthorization()
+    .WithName("Me");
 
 app.MapPost("/workout/build", (List<WorkoutBlockSpec> blocks) =>
 {
@@ -358,3 +432,9 @@ internal sealed record BlockedAreaDto(double Lat, double Lon, double RadiusMeter
 
 // Analog zu BlockedAreaDto, siehe RouteRequest.RequiredPoints.
 internal sealed record RequiredPointDto(double Lat, double Lon);
+
+internal sealed record RegisterRequest(string Email, string Password);
+
+internal sealed record LoginRequest(string Email, string Password);
+
+internal sealed record AuthResponse(string Token, string Email);

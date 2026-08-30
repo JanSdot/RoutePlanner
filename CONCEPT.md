@@ -255,8 +255,26 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
   Core Identity Standard-Schema) angelegt, `DATABASE_URL` (Neon-URI) wird zur Laufzeit in einen
   Npgsql-Verbindungsstring uebersetzt (lokal aus `.env.local`, auf Render direkt als echte
   Umgebungsvariable). Initiale Migration erstellt und live gegen die echte Neon-DB angewendet,
-  Tabellen per `neon psql` verifiziert. NOCH NICHT umgesetzt: Registrierungs-/Login-Endpunkte
-  selbst (dieser Schritt hat nur die Infrastruktur verbunden).
+  Tabellen per `neon psql` verifiziert.
+
+  **Registrierung/Login (2026-08-30, durchgeführt):** `POST /auth/register`, `POST /auth/login`,
+  `GET /auth/me` (geschuetzt). Bearer-Token (JWT, HMAC-SHA256, 30 Tage Gueltigkeit, bewusst ohne
+  Refresh-Token-Mechanismus - fuer Stufe 1 ausreichend) statt Cookies, da Frontend und API auf
+  unterschiedlichen Origins laufen und Cross-Site-Cookies (SameSite=None + Domain-Handling)
+  unnoetig kompliziert waeren. Signierschluessel lokal per `dotnet user-secrets`, auf Render
+  spaeter per Umgebungsvariable `Jwt__SigningKey` (noch nicht gesetzt - Deployment dieser
+  Funktion steht noch aus). `RequireUniqueEmail` aktiviert (Identity's Default ist aus, waere bei
+  E-Mail-basiertem Login aber mehrdeutig). Identity's Standard-Passwortrichtlinie unveraendert
+  uebernommen. E-Mail-Bestaetigung/Passwort-Reset-Flow bewusst noch nicht umgesetzt (kein
+  E-Mail-Versand-Setup vorhanden) - eigener spaeterer Schritt.
+
+  Live gegen die echte Neon-DB verifiziert: Registrierung, doppelte E-Mail korrekt abgelehnt
+  (400), falsches Passwort korrekt abgelehnt (401), gueltiges Login liefert Token, `/auth/me`
+  ohne Token 401/mit Token 200, zu schwaches Passwort von Identity's Regel abgelehnt (400).
+  Dabei einmal live beobachtet: Neons serverless Compute war zwischenzeitlich in den
+  Ruhezustand (Scale-to-Zero) gegangen - der erste Request danach lief in einen
+  Verbindungs-Timeout, ein Retry weckte die Datenbank und lief danach normal durch (kein Bug,
+  erwartetes Neon-Verhalten bei Inaktivität).
 - A-nach-B-Routing (statt nur Rundkurs)
 - **Windmodellierung** (geplant, noch nicht umgesetzt) - Scope bewusst auf die Zeitschätzung
   begrenzt, die Streckenführung selbst bleibt unverändert. Datenquelle: Open-Meteo (kostenlos,
