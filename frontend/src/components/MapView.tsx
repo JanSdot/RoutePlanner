@@ -66,6 +66,9 @@ interface MapViewProps {
   requiredPoints: GeoPoint[];
   onAddRequiredPoint: (point: GeoPoint) => void;
   showJunctions: boolean;
+  // Fuer /junctions - MapView wird erst nach erfolgreichem Login gerendert (siehe App.tsx),
+  // ein gueltiges Token ist an dieser Stelle daher immer vorhanden.
+  authToken: string;
 }
 
 export function MapView({
@@ -79,6 +82,7 @@ export function MapView({
   requiredPoints,
   onAddRequiredPoint,
   showJunctions,
+  authToken,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -262,7 +266,7 @@ export function MapView({
     const addJunctionsLayer = async () => {
       let junctions: Junction[];
       try {
-        junctions = await requestJunctions();
+        junctions = await requestJunctions(authToken);
       } catch {
         return; // Kein hartes UI-Fehlerfeedback fuer diesen rein informativen Layer.
       }

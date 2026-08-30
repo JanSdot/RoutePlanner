@@ -44,9 +44,10 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   return data;
 }
 
-export async function requestRoute(input: RouteFormInput): Promise<RouteResult> {
+export async function requestRoute(input: RouteFormInput, token: string): Promise<RouteResult> {
   const response = await fetch(`${API_BASE_URL}/route`, {
     method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
     body: buildFormData(input, "json"),
   });
   if (!response.ok) {
@@ -56,9 +57,10 @@ export async function requestRoute(input: RouteFormInput): Promise<RouteResult> 
   return (await response.json()) as RouteResult;
 }
 
-export async function requestRouteGpx(input: RouteFormInput): Promise<Blob> {
+export async function requestRouteGpx(input: RouteFormInput, token: string): Promise<Blob> {
   const response = await fetch(`${API_BASE_URL}/route`, {
     method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
     body: buildFormData(input, "gpx"),
   });
   if (!response.ok) {
@@ -70,8 +72,10 @@ export async function requestRouteGpx(input: RouteFormInput): Promise<Blob> {
 
 // Einmaliger Abruf fuer den optionalen Ampeln/Stoppschilder-Kartenlayer (siehe MapView) -
 // wird vom Frontend gecacht, nicht bei jedem Toggle neu geladen.
-export async function requestJunctions(): Promise<Junction[]> {
-  const response = await fetch(`${API_BASE_URL}/junctions`);
+export async function requestJunctions(token: string): Promise<Junction[]> {
+  const response = await fetch(`${API_BASE_URL}/junctions`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `Ampeln/Stoppschilder-Abruf fehlgeschlagen (HTTP ${response.status})`);
@@ -118,10 +122,10 @@ export async function fetchCurrentUser(token: string): Promise<string | null> {
   return data.email;
 }
 
-export async function buildWorkoutFitFile(blocks: WorkoutBlockSpec[]): Promise<File> {
+export async function buildWorkoutFitFile(blocks: WorkoutBlockSpec[], token: string): Promise<File> {
   const response = await fetch(`${API_BASE_URL}/workout/build`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify(blocks),
   });
   if (!response.ok) {
@@ -130,4 +134,30 @@ export async function buildWorkoutFitFile(blocks: WorkoutBlockSpec[]): Promise<F
   }
   const blob = await response.blob();
   return new File([blob], "generated-workout.fit", { type: "application/octet-stream" });
+}
+
+// Gespeichertes Fahrerprofil (FTP/Gewicht/Sprint-Watt) - siehe GET/PUT /profile (Backend).
+// null bei GET = noch kein Profil gespeichert (kein Fehlerzustand, z.B. erster Login).
+export interface RiderProfileDto {
+  ftpWatts: number;
+  weightKg: number;
+  sprintAvgWatts: number;
+}
+
+export async function fetchProfile(token: string): Promise<RiderProfileDto | null> {
+  const response = await fetch(`${API_BASE_URL}/profile`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Profil-Abruf fehlgeschlagen (HTTP ${response.status})`);
+  return (await response.json()) as RiderProfileDto;
+}
+
+export async function saveProfile(token: string, profile: RiderProfileDto): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/profile`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(profile),
+  });
+  if (!response.ok) throw new Error(`Profil-Speichern fehlgeschlagen (HTTP ${response.status})`);
 }

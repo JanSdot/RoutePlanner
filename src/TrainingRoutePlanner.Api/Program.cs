@@ -181,6 +181,7 @@ app.MapGet("/health", () => Results.Ok());
 // gesamte Region auf einmal statt bounding-box-basiert, konsistent mit CorridorIndex' Ansatz
 // einer einzigen fest im Speicher gehaltenen Region (siehe CONCEPT.md 4.1).
 app.MapGet("/junctions", (ICorridorIndex corridorIndex) => Results.Ok(corridorIndex.GetAllJunctions()))
+    .RequireAuthorization()
     .WithName("GetJunctions");
 
 // Render terminiert TLS an seinem eigenen Edge und leitet intern per HTTP weiter - ein
@@ -255,6 +256,47 @@ app.MapGet("/auth/me", (ClaimsPrincipal principal) =>
     .RequireAuthorization()
     .WithName("Me");
 
+// Gespeichertes Fahrerprofil (FTP/Gewicht/Sprint-Watt) pro Nutzerkonto - erster konkreter Nutzen
+// eines eingeloggten Zustands, siehe CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/
+// Vereine". 1:1 pro Nutzer (UserId ist Primary Key, siehe UserRiderProfile), daher upsert statt
+// separater Create/Update-Unterscheidung.
+app.MapGet("/profile", async (ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var profile = await db.UserRiderProfiles.FindAsync(userId);
+    return profile is null
+        ? Results.NotFound()
+        : Results.Ok(new RiderProfileDto(profile.FtpWatts, profile.WeightKg, profile.SprintAvgWatts));
+})
+.RequireAuthorization()
+.WithName("GetProfile");
+
+app.MapPut("/profile", async (RiderProfileDto request, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var profile = await db.UserRiderProfiles.FindAsync(userId);
+    if (profile is null)
+    {
+        db.UserRiderProfiles.Add(new UserRiderProfile
+        {
+            UserId = userId,
+            FtpWatts = request.FtpWatts,
+            WeightKg = request.WeightKg,
+            SprintAvgWatts = request.SprintAvgWatts,
+        });
+    }
+    else
+    {
+        profile.FtpWatts = request.FtpWatts;
+        profile.WeightKg = request.WeightKg;
+        profile.SprintAvgWatts = request.SprintAvgWatts;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("SaveProfile");
+
 app.MapPost("/workout/build", (List<WorkoutBlockSpec> blocks) =>
 {
     if (blocks.Count == 0)
@@ -274,6 +316,7 @@ app.MapPost("/workout/build", (List<WorkoutBlockSpec> blocks) =>
         return Results.BadRequest(ex.Message);
     }
 })
+.RequireAuthorization()
 .WithName("BuildWorkoutFit");
 
 app.MapPost("/route", async (HttpRequest request, RouteConstructionService routeService, FitWorkoutParser fitParser) =>
@@ -442,6 +485,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
     }
 })
 .DisableAntiforgery()
+.RequireAuthorization()
 .WithName("BuildRoute");
 
 app.Run();
@@ -459,3 +503,7 @@ internal sealed record RegisterRequest(string Email, string Password);
 internal sealed record LoginRequest(string Email, string Password);
 
 internal sealed record AuthResponse(string Token, string Email);
+
+// Siehe GET/PUT /profile - UserRiderProfile (Data) ohne UserId, das kommt aus dem JWT, nicht
+// vom Client.
+internal sealed record RiderProfileDto(double FtpWatts, double WeightKg, double SprintAvgWatts);

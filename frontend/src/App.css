@@ -4,6 +4,28 @@
   height: 100vh;
 }
 
+.auth-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  gap: 1rem;
+  background: #f8fafc;
+}
+
+.auth-gate h1 {
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+.auth-gate .auth-panel {
+  width: 300px;
+  background: white;
+  box-sizing: border-box;
+}
+
 .sidebar {
   width: 340px;
   flex-shrink: 0;
@@ -81,6 +103,28 @@
 .auth-panel p {
   font-size: 0.85rem;
   margin: 0 0 0.5rem;
+}
+
+/* Eigene, kontextunabhaengige Label-/Input-Styles (statt der auf ".sidebar form" beschraenkten
+   Regeln oben) - AuthPanel wird sowohl im .auth-gate (kein .sidebar/form vorhanden) als auch im
+   eingeloggten Sidebar-Zustand gerendert. */
+.auth-panel label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+.auth-panel input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.5rem;
+  font-weight: 400;
+  font-size: 0.9rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
 }
 
 .auth-panel-actions {

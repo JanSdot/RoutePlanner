@@ -42,8 +42,10 @@ einmal einrichtet.
 - **Nur die Region um Berlin/Brandenburg** (60 km um Sportforum Berlin) ist nutzbar — siehe
   CONCEPT.md Abschnitt 6.1. Für andere Regionen müssten die BBox-Koordinaten in beiden
   Dockerfiles sowie `graphhopper-config.yml` angepasst werden.
-- **Kein Auth/Multi-User** — die App ist für alle erreichbar, die die URL kennen (siehe
-  CONCEPT.md Phase 2/Phase 4 zu Mehrbenutzerfähigkeit als spätere Erweiterung).
+- **Login erforderlich** — seit CONCEPT.md 6.25 ist ein Konto (E-Mail/Passwort) Pflicht, um
+  WattLoop zu nutzen. Braucht in Produktion zusätzlich zu `DATABASE_URL` (Neon) auch
+  `Jwt__SigningKey` als Render-Umgebungsvariable (lokal per `dotnet user-secrets`, siehe
+  CONCEPT.md 6.19-Auth-Abschnitt) - ohne diese startet die API nicht.
 - GraphHopper lädt SRTM-Höhendaten beim ersten Bedarf dynamisch nach (braucht ausgehenden
   Internetzugriff, den Render-Container standardmäßig haben).
 

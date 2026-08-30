@@ -2,7 +2,16 @@ import { useEffect, useState } from "react";
 import { MapView, colorForSegmentLabel } from "./components/MapView";
 import { WorkoutEditor } from "./components/WorkoutEditor";
 import { AuthPanel } from "./components/AuthPanel";
-import { requestRoute, requestRouteGpx, buildWorkoutFitFile, registerUser, loginUser, fetchCurrentUser } from "./api";
+import {
+  requestRoute,
+  requestRouteGpx,
+  buildWorkoutFitFile,
+  registerUser,
+  loginUser,
+  fetchCurrentUser,
+  fetchProfile,
+  saveProfile,
+} from "./api";
 import type { BlockedArea, GeoPoint, RouteResult, SegmentReusePreference, WorkoutBlockSpec } from "./types";
 import "./App.css";
 
@@ -85,20 +94,42 @@ export default function App() {
   }
 
   const [authEmail, setAuthEmail] = useState<string | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  // Verhindert, dass beim Laden kurz das Login-Formular aufblitzt, waehrend ein gespeichertes
+  // Token noch gegen /auth/me geprueft wird - true bis diese Pruefung (oder deren Fehlen)
+  // abgeschlossen ist.
+  const [authInitializing, setAuthInitializing] = useState(true);
+
+  // Login ist Pflicht (WattLoop ohne Konto nicht nutzbar) - das gespeicherte Fahrerprofil ist
+  // der erste konkrete Nutzen davon (siehe CONCEPT.md 6.25).
+  async function loadProfile(token: string) {
+    const profile = await fetchProfile(token).catch(() => null);
+    if (profile) {
+      setFtpWatts(profile.ftpWatts);
+      setWeightKg(profile.weightKg);
+      setSprintAvgWatts(profile.sprintAvgWatts);
+    }
+  }
 
   // Ein gespeichertes Token ueberlebt einen Seiten-Reload nur, wenn es noch gueltig ist - beim
   // Laden einmal gegen /auth/me pruefen statt blind zu vertrauen (kann z.B. abgelaufen sein).
   useEffect(() => {
     const storedToken = localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
-    if (!storedToken) return;
-    fetchCurrentUser(storedToken).then((email) => {
+    if (!storedToken) {
+      setAuthInitializing(false);
+      return;
+    }
+    fetchCurrentUser(storedToken).then(async (email) => {
       if (email) {
         setAuthEmail(email);
+        setAuthToken(storedToken);
+        await loadProfile(storedToken);
       } else {
         localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
       }
+      setAuthInitializing(false);
     });
   }, []);
 
@@ -108,7 +139,9 @@ export default function App() {
     try {
       const result = await loginUser(email, password);
       localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, result.token);
+      setAuthToken(result.token);
       setAuthEmail(result.email);
+      await loadProfile(result.token);
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -130,6 +163,7 @@ export default function App() {
 
   function handleLogout() {
     localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    setAuthToken(null);
     setAuthEmail(null);
   }
 
@@ -145,40 +179,46 @@ export default function App() {
 
   const hasWorkoutInput = inputMode === "file" ? !!fitFile : editorBlocks.length > 0;
 
-  async function resolveFitFile(): Promise<File> {
+  async function resolveFitFile(token: string): Promise<File> {
     if (inputMode === "file") {
       if (!fitFile) throw new Error("Keine FIT-Datei ausgewählt.");
       return fitFile;
     }
-    return buildWorkoutFitFile(editorBlocks);
+    return buildWorkoutFitFile(editorBlocks, token);
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!startPoint || !hasWorkoutInput) return;
+    if (!startPoint || !hasWorkoutInput || !authToken) return;
 
     setLoading(true);
     setError(null);
     setRouteResult(null);
     try {
-      const file = await resolveFitFile();
-      const result = await requestRoute({
-        rider: { ftpWatts, weightKg, sprintAvgWatts },
-        startLat: startPoint.lat,
-        startLon: startPoint.lon,
-        maxApproachMinutes,
-        segmentReuse,
-        allowUTurns,
-        maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
-        maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
-        maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
-        maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
-        blockedAreas,
-        requiredPoints,
-        plannedStartTime: plannedStartTime || null,
-        fitFile: file,
-      });
+      const file = await resolveFitFile(authToken);
+      const result = await requestRoute(
+        {
+          rider: { ftpWatts, weightKg, sprintAvgWatts },
+          startLat: startPoint.lat,
+          startLon: startPoint.lon,
+          maxApproachMinutes,
+          segmentReuse,
+          allowUTurns,
+          maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
+          maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
+          maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
+          maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
+          blockedAreas,
+          requiredPoints,
+          plannedStartTime: plannedStartTime || null,
+          fitFile: file,
+        },
+        authToken,
+      );
       setRouteResult(result);
+      // Nicht blockierend/nicht kritisch - ein fehlgeschlagenes Speichern soll die gerade
+      // erfolgreich berechnete Route nicht verwerfen (siehe CONCEPT.md 6.25).
+      saveProfile(authToken, { ftpWatts, weightKg, sprintAvgWatts }).catch(() => {});
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -187,30 +227,56 @@ export default function App() {
   }
 
   async function handleGpxDownload() {
-    if (!startPoint || !hasWorkoutInput) return;
+    if (!startPoint || !hasWorkoutInput || !authToken) return;
     setError(null);
     try {
-      const file = await resolveFitFile();
-      const blob = await requestRouteGpx({
-        rider: { ftpWatts, weightKg, sprintAvgWatts },
-        startLat: startPoint.lat,
-        startLon: startPoint.lon,
-        maxApproachMinutes,
-        segmentReuse,
-        allowUTurns,
-        maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
-        maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
-        maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
-        maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
-        blockedAreas,
-        requiredPoints,
-        plannedStartTime: plannedStartTime || null,
-        fitFile: file,
-      });
+      const file = await resolveFitFile(authToken);
+      const blob = await requestRouteGpx(
+        {
+          rider: { ftpWatts, weightKg, sprintAvgWatts },
+          startLat: startPoint.lat,
+          startLon: startPoint.lon,
+          maxApproachMinutes,
+          segmentReuse,
+          allowUTurns,
+          maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
+          maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
+          maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
+          maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
+          blockedAreas,
+          requiredPoints,
+          plannedStartTime: plannedStartTime || null,
+          fitFile: file,
+        },
+        authToken,
+      );
       downloadBlob(blob, "trainingsroute.gpx");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  // Login ist Pflicht (siehe CONCEPT.md 6.25) - vor Abschluss der Token-Pruefung (kurzer
+  // Moment beim Laden) noch nichts anzeigen, um ein kurzes Aufblitzen des Login-Formulars bei
+  // eigentlich gueltigem gespeichertem Token zu vermeiden.
+  if (authInitializing) {
+    return <div className="app-layout" />;
+  }
+
+  if (!authEmail || !authToken) {
+    return (
+      <div className="auth-gate">
+        <h1>WattLoop</h1>
+        <AuthPanel
+          email={null}
+          loading={authLoading}
+          error={authError}
+          onLogin={handleLogin}
+          onRegister={handleRegister}
+          onLogout={handleLogout}
+        />
+      </div>
+    );
   }
 
   return (
@@ -218,15 +284,16 @@ export default function App() {
       <aside className="sidebar">
         <h1>WattLoop</h1>
 
+        <AuthPanel
+          email={authEmail}
+          loading={authLoading}
+          error={authError}
+          onLogin={handleLogin}
+          onRegister={handleRegister}
+          onLogout={handleLogout}
+        />
+
         <form onSubmit={handleSubmit}>
-          <AuthPanel
-            email={authEmail}
-            loading={authLoading}
-            error={authError}
-            onLogin={handleLogin}
-            onRegister={handleRegister}
-            onLogout={handleLogout}
-          />
           <label>
             Startpunkt
             <input
@@ -470,6 +537,7 @@ export default function App() {
           requiredPoints={requiredPoints}
           onAddRequiredPoint={addRequiredPoint}
           showJunctions={showJunctions}
+          authToken={authToken}
         />
       </main>
     </div>
