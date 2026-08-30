@@ -1,4 +1,4 @@
-import type { RouteFormInput, RouteResult } from "./types";
+import type { RouteFormInput, RouteResult, WorkoutBlockSpec } from "./types";
 
 const API_BASE_URL = "http://localhost:5080";
 
@@ -39,4 +39,18 @@ export async function requestRouteGpx(input: RouteFormInput): Promise<Blob> {
     throw new Error(text || `GPX-Export fehlgeschlagen (HTTP ${response.status})`);
   }
   return await response.blob();
+}
+
+export async function buildWorkoutFitFile(blocks: WorkoutBlockSpec[]): Promise<File> {
+  const response = await fetch(`${API_BASE_URL}/workout/build`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(blocks),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Workout-Erzeugung fehlgeschlagen (HTTP ${response.status})`);
+  }
+  const blob = await response.blob();
+  return new File([blob], "generated-workout.fit", { type: "application/octet-stream" });
 }

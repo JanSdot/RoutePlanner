@@ -39,3 +39,18 @@ export interface RouteFormInput {
   allowUTurns: boolean;
   fitFile: File;
 }
+
+// Sprint wird vom Block-Editor bewusst nicht unterstuetzt (nicht %FTP-basiert, siehe
+// FitWorkoutEncoder).
+export type EditorZone = "GA1" | "GA2" | "EB" | "SB" | "VO2max";
+
+export interface WorkoutStepSpec {
+  zone: EditorZone;
+  durationMinutes: number;
+}
+
+export interface WorkoutBlockSpec {
+  step?: WorkoutStepSpec;
+  repeatTimes?: number;
+  repeatSteps?: WorkoutStepSpec[];
+}

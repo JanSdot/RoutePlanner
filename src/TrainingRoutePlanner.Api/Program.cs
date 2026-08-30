@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json.Serialization;
 using TrainingRoutePlanner.Domain;
 using TrainingRoutePlanner.FitParsing;
 using TrainingRoutePlanner.OsmCorridors;
@@ -8,6 +9,8 @@ using TrainingRoutePlanner.RouteEngine;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 const string FrontendCorsPolicy = "FrontendDevServer";
 builder.Services.AddCors(options =>
@@ -48,6 +51,27 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseCors(FrontendCorsPolicy);
+
+app.MapPost("/workout/build", (List<WorkoutBlockSpec> blocks) =>
+{
+    if (blocks.Count == 0)
+        return Results.BadRequest("Mindestens ein Block wird benötigt.");
+
+    try
+    {
+        var bytes = FitWorkoutEncoder.Encode(blocks);
+        return Results.File(bytes, "application/octet-stream", "generated-workout.fit");
+    }
+    catch (NotSupportedException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+})
+.WithName("BuildWorkoutFit");
 
 app.MapPost("/route", async (HttpRequest request, RouteConstructionService routeService, FitWorkoutParser fitParser) =>
 {

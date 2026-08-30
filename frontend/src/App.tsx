@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { MapView, colorForSegmentLabel } from "./components/MapView";
-import { requestRoute, requestRouteGpx } from "./api";
-import type { GeoPoint, RouteResult, SegmentReusePreference } from "./types";
+import { WorkoutEditor } from "./components/WorkoutEditor";
+import { requestRoute, requestRouteGpx, buildWorkoutFitFile } from "./api";
+import type { GeoPoint, RouteResult, SegmentReusePreference, WorkoutBlockSpec } from "./types";
 import "./App.css";
 
 function formatDotNetTimeSpan(value: string): string {
@@ -25,6 +26,8 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+type InputMode = "file" | "editor";
+
 export default function App() {
   const [startPoint, setStartPoint] = useState<GeoPoint | null>({
     lat: 52.5426187,
@@ -36,20 +39,34 @@ export default function App() {
   const [maxApproachMinutes, setMaxApproachMinutes] = useState(30);
   const [segmentReuse, setSegmentReuse] = useState<SegmentReusePreference>("PreferReuse");
   const [allowUTurns, setAllowUTurns] = useState(true);
+
+  const [inputMode, setInputMode] = useState<InputMode>("file");
   const [fitFile, setFitFile] = useState<File | null>(null);
+  const [editorBlocks, setEditorBlocks] = useState<WorkoutBlockSpec[]>([]);
 
   const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const hasWorkoutInput = inputMode === "file" ? !!fitFile : editorBlocks.length > 0;
+
+  async function resolveFitFile(): Promise<File> {
+    if (inputMode === "file") {
+      if (!fitFile) throw new Error("Keine FIT-Datei ausgewählt.");
+      return fitFile;
+    }
+    return buildWorkoutFitFile(editorBlocks);
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!startPoint || !fitFile) return;
+    if (!startPoint || !hasWorkoutInput) return;
 
     setLoading(true);
     setError(null);
     setRouteResult(null);
     try {
+      const file = await resolveFitFile();
       const result = await requestRoute({
         rider: { ftpWatts, weightKg, sprintAvgWatts },
         startLat: startPoint.lat,
@@ -57,7 +74,7 @@ export default function App() {
         maxApproachMinutes,
         segmentReuse,
         allowUTurns,
-        fitFile,
+        fitFile: file,
       });
       setRouteResult(result);
     } catch (err) {
@@ -68,9 +85,10 @@ export default function App() {
   }
 
   async function handleGpxDownload() {
-    if (!startPoint || !fitFile) return;
+    if (!startPoint || !hasWorkoutInput) return;
     setError(null);
     try {
+      const file = await resolveFitFile();
       const blob = await requestRouteGpx({
         rider: { ftpWatts, weightKg, sprintAvgWatts },
         startLat: startPoint.lat,
@@ -78,7 +96,7 @@ export default function App() {
         maxApproachMinutes,
         segmentReuse,
         allowUTurns,
-        fitFile,
+        fitFile: file,
       });
       downloadBlob(blob, "trainingsroute.gpx");
     } catch (err) {
@@ -101,15 +119,35 @@ export default function App() {
             />
           </label>
 
-          <label>
-            FIT-Workout-Datei
-            <input
-              type="file"
-              accept=".fit"
-              onChange={(e) => setFitFile(e.target.files?.[0] ?? null)}
-              required
-            />
-          </label>
+          <div className="mode-tabs">
+            <button
+              type="button"
+              className={inputMode === "file" ? "active" : ""}
+              onClick={() => setInputMode("file")}
+            >
+              FIT-Datei hochladen
+            </button>
+            <button
+              type="button"
+              className={inputMode === "editor" ? "active" : ""}
+              onClick={() => setInputMode("editor")}
+            >
+              Workout zusammenstellen
+            </button>
+          </div>
+
+          {inputMode === "file" ? (
+            <label>
+              FIT-Workout-Datei
+              <input
+                type="file"
+                accept=".fit"
+                onChange={(e) => setFitFile(e.target.files?.[0] ?? null)}
+              />
+            </label>
+          ) : (
+            <WorkoutEditor onChange={setEditorBlocks} />
+          )}
 
           <fieldset>
             <legend>Nutzerprofil</legend>
@@ -155,7 +193,7 @@ export default function App() {
             </label>
           </fieldset>
 
-          <button type="submit" disabled={loading || !startPoint || !fitFile}>
+          <button type="submit" disabled={loading || !startPoint || !hasWorkoutInput}>
             {loading ? "Route wird berechnet…" : "Route berechnen"}
           </button>
         </form>

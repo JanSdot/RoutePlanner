@@ -150,3 +150,125 @@
   flex: 1;
   position: relative;
 }
+
+.mode-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.mode-tabs button {
+  flex: 1;
+  padding: 0.4rem 0.3rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid #cbd5e1;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #475569;
+}
+
+.mode-tabs button.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: white;
+}
+
+.workout-editor {
+  margin-bottom: 0.75rem;
+}
+
+.editor-block {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+
+.editor-block select {
+  display: inline-block;
+  width: auto;
+  flex: 1.2;
+  margin-top: 0;
+}
+
+.editor-block input[type="number"] {
+  display: inline-block;
+  width: auto;
+  flex: 0.7;
+  margin-top: 0;
+  min-width: 0;
+}
+
+.editor-unit {
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: #64748b;
+}
+
+.editor-remove {
+  border: none;
+  background: none;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0.1rem 0.3rem;
+  flex-shrink: 0;
+}
+
+.editor-repeat {
+  flex-direction: column;
+  align-items: stretch;
+  border: 1px solid #dbeafe;
+  background: #eff6ff;
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+.editor-repeat-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+
+.editor-repeat-header input {
+  width: 3.5rem;
+  flex: none;
+  margin-top: 0;
+}
+
+.editor-inner-step {
+  margin-left: 0.5rem;
+}
+
+.editor-add-inner {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  color: #2563eb;
+  font-size: 0.78rem;
+  cursor: pointer;
+  padding: 0.15rem 0;
+  margin-left: 0.5rem;
+}
+
+.editor-add-row {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.editor-add-row button {
+  flex: 1;
+  padding: 0.35rem;
+  font-size: 0.8rem;
+  border: 1px dashed #94a3b8;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #475569;
+}

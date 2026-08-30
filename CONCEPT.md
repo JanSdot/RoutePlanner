@@ -220,8 +220,9 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 ### Phase 4 — Später (nicht Teil des MVP)
 
 - Mehrbenutzerfähigkeit, Auth, Hosting/Deployment für andere Nutzer
-- Manuelle Block-Builder-UI als Alternative zum FIT-Import
 - A-nach-B-Routing (statt nur Rundkurs)
+- Nutzer setzt manuell eigene Wegpunkte, um die berechnete Route gezielt anzupassen
+  (z. B. einen bestimmten Abschnitt umgehen oder erzwingen)
 - Windmodellierung (aktuell bewusst ignoriert)
 - Integration von Baustellen (aktuelle Straßensperrungen/-einschränkungen in die Korridor-/
   Routenbewertung einbeziehen, z. B. über OSM `construction`-Tags oder externe Baustellen-Feeds)
@@ -386,6 +387,23 @@ Wahoo-Geräte zeigen beim Abfahren einer geladenen Kurs-Datei ein Pop-up, sobald
 Wegpunkt in der Nähe erreicht wird — das ist tatsächlich positionsgebunden (GPS-Näherungsalarm),
 nur ohne mitlaufende Restdistanz-Anzeige (siehe Abwägung zum FIT-Workout-Export in Abschnitt 6
 Phase 4). Noch nicht am echten Gerät getestet, nur end-to-end gegen die API verifiziert.
+
+## 6.6 Phase 2 — Manueller Block-Editor als FIT-Alternative (durchgeführt)
+
+Damit Tester ohne vorhandene FIT-Datei starten können: Frontend hat jetzt einen Tab
+"Workout zusammenstellen" neben dem FIT-Upload — Nutzer bauen den Plan direkt aus Zonen-Blöcken
+(GA1/GA2/EB/SB/VO2max) und Wiederholungsgruppen (`+ Wiederholung`, mit beliebig vielen inneren
+Schritten). Neuer Endpoint **`POST /workout/build`** (`FitWorkoutEncoder` in
+TrainingRoutePlanner.FitParsing) erzeugt daraus eine **echte FIT-Workout-Datei** — bewusst über
+den existierenden `FitWorkoutParser` statt eines separaten Codepfads, damit Editor-Plan und
+FIT-Upload exakt denselben Rest der Pipeline durchlaufen. Zielleistung wird als %FTP-Bereich
+kodiert (Bandgrenzen aus `ZoneBands`, nicht absolute Watt) — macht die generierte Datei
+nutzerprofil-unabhängig wiederverwendbar. **Sprint wird nicht unterstützt** (nicht %FTP-basiert,
+siehe ZoneBands), Encoder wirft `NotSupportedException` bei einem Sprint-Block.
+
+3 Rundreise-Tests (Encode → Parse, inkl. Wiederholungsgruppen und Sprint-Ablehnung) plus
+End-to-End-Verifikation: Editor-Plan → generierte FIT-Bytes → vollständige Routenberechnung mit
+korrekt zugeordnetem Segment, live im echten Chrome bestätigt.
 
 ## 7. Offene Punkte
 
