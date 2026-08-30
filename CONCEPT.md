@@ -500,6 +500,32 @@ Segment- und Gesamt-Limit unabhängig voneinander geprüft). Zusätzlich live ge
 GraphHopper verifiziert: strenges Limit (100 m/50 m) führte zu allen 5 Versuchen und der
 korrekten Warnung, großzügiges Limit (3000 m) fand eine passende Variante ohne Warnung.
 
+## 6.10 Phase 2 — Für Radfahrer gesperrte Straßen ausschließen (durchgeführt)
+
+Auslöser: Nutzer fragte, ob OSM Daten dazu liefert, dass manche Straßen (Beispiel: B1 östlich von
+Berlin) für Radfahrer gar nicht befahren werden dürfen. **Ja, OSM hat das** (`bicycle=no`,
+`access=no`, `motorroad=yes`) - aber unser GraphHopper-Profil hat es bisher **nicht ausgewertet**.
+`graph.encoded_values` enthielt nur `road_class,surface,road_environment,max_speed,average_slope`,
+und das `custom_model` schloss ausschließlich `road_class == MOTORWAY` aus. Ueber `/info` direkt
+am laufenden GraphHopper geprüft: es gab keine `bike_access`-Encoded-Value, nur automatisch
+mitgelieferte `car_access` - GraphHopper hatte also schlicht keine gespeicherte Information
+darüber, ob ein Weg für Fahrräder gesperrt ist.
+
+**Konkret verifiziert statt nur vermutet:** Per Overpass-API-Abfrage eine echte, aktuell gesperrte
+B1-Teilstrecke gefunden ("Alte Berliner Straße", `highway=primary` + `bicycle=no`, NICHT einmal
+`trunk` - road_class-Filterung allein hätte das also so oder so nie erfasst). Route zwischen den
+beiden Enden dieser ca. 300m-Teilstrecke VOR dem Fix: GraphHopper fährt direkt durch
+(`road_class` durchgängig `primary`, 302m). NACH dem Fix (siehe unten): 332m über einen legalen
+Umweg (`unclassified`/`path`/`footway`), die gesperrte Straße wird korrekt gemieden.
+
+**Fix:** `bike_access` zu `graph.encoded_values` hinzugefügt (`deploy/graphhopper-config.yml` und
+`phase0-spike/graphhopper/config.yml`) und im `custom_model` eine zusätzliche Prioritäts-Regel
+`if: "!bike_access", multiply_by: "0"` ergänzt - reine GraphHopper-Config-Änderung, kein C#-Code
+betroffen, da GraphHopper gesperrte Wege dadurch gar nicht mehr als Routing-Optionen anbietet.
+Encoded Values werden beim Graph-Import fest geschrieben (siehe 6.8) - lokaler Graph-Cache musste
+daher einmalig gelöscht und neu importiert werden. Auf Render nicht nötig, da der Graph bei jedem
+Docker-Build ohnehin komplett frisch importiert wird (siehe DEPLOY.md).
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,

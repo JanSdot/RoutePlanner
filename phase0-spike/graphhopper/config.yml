@@ -2,7 +2,7 @@ graphhopper:
   datareader.file: ../data/sportforum-60km.osm.pbf
   graph.location: ./graph-cache
   import.osm.ignored_highways: ""
-  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope
+  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope,bike_access
   graph.elevation.provider: srtm
   graph.elevation.cache_dir: ./elevation-cache
   graph.elevation.dataaccess: MMAP
@@ -12,6 +12,10 @@ graphhopper:
       custom_model:
         priority:
           - if: "road_class == MOTORWAY"
+            multiply_by: "0"
+          # OSM bicycle=no/access=no (und motorroad=yes) - siehe deploy/graphhopper-config.yml
+          # und CONCEPT.md Abschnitt 6.10.
+          - if: "!bike_access"
             multiply_by: "0"
         speed:
           - if: "true"
