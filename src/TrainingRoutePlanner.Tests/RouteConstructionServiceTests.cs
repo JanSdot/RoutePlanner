@@ -35,10 +35,14 @@ public class RouteConstructionServiceTests
         // simulieren (fuer die Untergrund-Vermeidungs-Tests) - Default: kein Untergrund-Anteil.
         public Func<int, IReadOnlyList<SurfaceSegment>>? SurfaceSegmentsBySeed { get; set; }
 
-        public Task<GraphHopperRoute> RoundTripAsync(GeoPoint start, double distanceMeters, int seed, CancellationToken ct = default)
+        public List<IReadOnlyList<BlockedArea>> BlockedAreasReceived { get; } = [];
+
+        public Task<GraphHopperRoute> RoundTripAsync(
+            GeoPoint start, double distanceMeters, int seed, IReadOnlyList<BlockedArea> blockedAreas, CancellationToken ct = default)
         {
             RoundTripDistanceRequests.Add(distanceMeters);
             RoundTripSeeds.Add(seed);
+            BlockedAreasReceived.Add(blockedAreas);
 
             var geometry = GeometryFactory?.Invoke(distanceMeters) ?? new List<GeoPoint>
             {
@@ -52,9 +56,11 @@ public class RouteConstructionServiceTests
             return Task.FromResult(new GraphHopperRoute(distanceMeters, TimeSpan.FromSeconds(distanceMeters / 8.0), geometry, surfaceSegments));
         }
 
-        public Task<GraphHopperRoute> RouteThroughWaypointsAsync(IReadOnlyList<GeoPoint> waypoints, CancellationToken ct = default)
+        public Task<GraphHopperRoute> RouteThroughWaypointsAsync(
+            IReadOnlyList<GeoPoint> waypoints, IReadOnlyList<BlockedArea> blockedAreas, CancellationToken ct = default)
         {
             WaypointCalls.Add(waypoints);
+            BlockedAreasReceived.Add(blockedAreas);
             return Task.FromResult(new GraphHopperRoute(RoundTripDistanceMeters, FinalRouteTime, waypoints, []));
         }
     }

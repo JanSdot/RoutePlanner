@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using TrainingRoutePlanner.Domain;
 using TrainingRoutePlanner.FitParsing;
@@ -158,6 +159,29 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         return int.TryParse(form[key], NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : null;
     }
 
+    // Als JSON-Array im Formularfeld kodiert (nicht als einzelne Felder wie die uebrigen
+    // Parameter), da es beliebig viele Sperrbereiche sein koennen - siehe frontend/src/api.ts.
+    // PropertyNameCaseInsensitive noetig, da das Frontend camelCase ("lat"/"radiusMeters")
+    // sendet, die BlockedAreaDto-Properties aber ueblicher C#-Konvention nach PascalCase sind.
+    var blockedAreaJsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+    List<BlockedArea> ParseBlockedAreas()
+    {
+        var raw = form["blockedAreas"].ToString();
+        if (string.IsNullOrWhiteSpace(raw))
+            return [];
+        try
+        {
+            var dtos = JsonSerializer.Deserialize<List<BlockedAreaDto>>(raw, blockedAreaJsonOptions)
+                ?? throw new ArgumentException("Feld 'blockedAreas' ist kein gueltiges JSON-Array.");
+            return dtos.Select(d => new BlockedArea(new GeoPoint(d.Lat, d.Lon), d.RadiusMeters)).ToList();
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException($"Feld 'blockedAreas' konnte nicht gelesen werden: {ex.Message}");
+        }
+    }
+
     RiderProfile rider;
     GeoPoint start;
     double maxApproachMinutes;
@@ -167,6 +191,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
     double? maxTotalUnpavedMeters;
     int? maxDisruptiveJunctions;
     int? maxRouteVariantAttempts;
+    List<BlockedArea> blockedAreas;
     try
     {
         rider = new RiderProfile
@@ -185,6 +210,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         maxTotalUnpavedMeters = ParseOptionalNullable("maxTotalUnpavedMeters");
         maxDisruptiveJunctions = ParseOptionalNullableInt("maxDisruptiveJunctions");
         maxRouteVariantAttempts = ParseOptionalNullableInt("maxRouteVariantAttempts");
+        blockedAreas = ParseBlockedAreas();
     }
     catch (ArgumentException ex)
     {
@@ -214,6 +240,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         MaxTotalUnpavedMeters = maxTotalUnpavedMeters,
         MaxDisruptiveJunctions = maxDisruptiveJunctions,
         MaxRouteVariantAttempts = maxRouteVariantAttempts,
+        BlockedAreas = blockedAreas,
     };
 
     try
@@ -235,3 +262,8 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
 .WithName("BuildRoute");
 
 app.Run();
+
+// Flaches JSON-Format fuer das "blockedAreas"-Formularfeld (siehe frontend/src/api.ts) - nicht
+// direkt BlockedArea/GeoPoint, da deren Konstruktor-Parameternamen nicht 1:1 zu einer
+// nutzerfreundlichen {lat, lon, radiusMeters}-Form passen.
+internal sealed record BlockedAreaDto(double Lat, double Lon, double RadiusMeters);

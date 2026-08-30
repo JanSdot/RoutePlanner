@@ -30,6 +30,14 @@ export interface RouteResult {
 
 export type SegmentReusePreference = "PreferReuse" | "PreferVariety";
 
+// Ein vom Nutzer auf der Karte markierter Bereich, der bei der Routenberechnung gemieden
+// werden soll - siehe RouteRequest.BlockedAreas (Backend).
+export interface BlockedArea {
+  lat: number;
+  lon: number;
+  radiusMeters: number;
+}
+
 export interface RiderProfileInput {
   ftpWatts: number;
   weightKg: number;
@@ -50,6 +58,7 @@ export interface RouteFormInput {
   // Wirkungslos, wenn keines der drei Limits oben gesetzt ist - siehe RouteRequest.
   // MaxRouteVariantAttempts (Backend).
   maxRouteVariantAttempts?: number | null;
+  blockedAreas: BlockedArea[];
   fitFile: File;
 }
 

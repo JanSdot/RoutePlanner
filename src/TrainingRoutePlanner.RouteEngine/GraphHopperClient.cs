@@ -13,37 +13,55 @@ public sealed record GraphHopperRoute(
 
 /// <summary>Thin wrapper over the GraphHopper /route endpoint, see CONCEPT.md Abschnitt 4.2.
 /// Requires the GraphHopper profile to run WITHOUT contraction hierarchies - round_trip is
-/// incompatible with CH (validated in the Phase 0 spike, CONCEPT.md 6.1).</summary>
+/// incompatible with CH (validated in the Phase 0 spike, CONCEPT.md 6.1). Nutzt POST mit
+/// JSON-Body statt GET mit Query-String, seit blockierte Bereiche (CONCEPT.md 6.18) einen
+/// per-Request custom_model brauchen - GraphHoppers klassischer "block_area"-Parameter wurde
+/// entfernt (Serverantwort verweist explizit auf custom_model mit "areas").</summary>
 public interface IGraphHopperClient
 {
-    Task<GraphHopperRoute> RoundTripAsync(GeoPoint start, double distanceMeters, int seed, CancellationToken ct = default);
+    Task<GraphHopperRoute> RoundTripAsync(
+        GeoPoint start, double distanceMeters, int seed, IReadOnlyList<BlockedArea> blockedAreas, CancellationToken ct = default);
 
-    Task<GraphHopperRoute> RouteThroughWaypointsAsync(IReadOnlyList<GeoPoint> waypoints, CancellationToken ct = default);
+    Task<GraphHopperRoute> RouteThroughWaypointsAsync(
+        IReadOnlyList<GeoPoint> waypoints, IReadOnlyList<BlockedArea> blockedAreas, CancellationToken ct = default);
 }
 
 public sealed class GraphHopperClient(HttpClient http, string profile = "bike") : IGraphHopperClient
 {
-    public async Task<GraphHopperRoute> RoundTripAsync(GeoPoint start, double distanceMeters, int seed, CancellationToken ct = default)
+    public async Task<GraphHopperRoute> RoundTripAsync(
+        GeoPoint start, double distanceMeters, int seed, IReadOnlyList<BlockedArea> blockedAreas, CancellationToken ct = default)
     {
-        var url = $"/route?point={Fmt(start)}&profile={profile}&algorithm=round_trip" +
-                   $"&round_trip.distance={distanceMeters.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)}" +
-                   $"&round_trip.seed={seed}&points_encoded=false&elevation=true&details=surface";
-        return await GetRouteAsync(url, ct);
+        var body = new GhRouteRequestBody
+        {
+            Points = [ToLonLat(start)],
+            Profile = profile,
+            Algorithm = "round_trip",
+            RoundTripDistance = distanceMeters,
+            RoundTripSeed = seed,
+            CustomModel = BuildCustomModel(blockedAreas),
+        };
+        return await PostRouteAsync(body, ct);
     }
 
-    public async Task<GraphHopperRoute> RouteThroughWaypointsAsync(IReadOnlyList<GeoPoint> waypoints, CancellationToken ct = default)
+    public async Task<GraphHopperRoute> RouteThroughWaypointsAsync(
+        IReadOnlyList<GeoPoint> waypoints, IReadOnlyList<BlockedArea> blockedAreas, CancellationToken ct = default)
     {
         if (waypoints.Count < 2)
             throw new ArgumentException("At least start and end waypoint required.", nameof(waypoints));
 
-        var pointsQuery = string.Join("&", waypoints.Select(p => $"point={Fmt(p)}"));
-        var url = $"/route?{pointsQuery}&profile={profile}&points_encoded=false&elevation=true&details=surface";
-        return await GetRouteAsync(url, ct);
+        var body = new GhRouteRequestBody
+        {
+            Points = waypoints.Select(ToLonLat).ToList(),
+            Profile = profile,
+            CustomModel = BuildCustomModel(blockedAreas),
+        };
+        return await PostRouteAsync(body, ct);
     }
 
-    private async Task<GraphHopperRoute> GetRouteAsync(string url, CancellationToken ct)
+    private async Task<GraphHopperRoute> PostRouteAsync(GhRouteRequestBody body, CancellationToken ct)
     {
-        var response = await http.GetFromJsonAsync<GhRouteResponse>(url, JsonOptions, ct)
+        var httpResponse = await http.PostAsJsonAsync("/route", body, JsonOptions, ct);
+        var response = await httpResponse.Content.ReadFromJsonAsync<GhRouteResponse>(JsonOptions, ct)
             ?? throw new GraphHopperException("Empty response from GraphHopper");
 
         if (response.Paths is null || response.Paths.Count == 0)
@@ -87,14 +105,113 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
         return result;
     }
 
-    private static string Fmt(GeoPoint p) =>
-        $"{p.Lat.ToString("F6", System.Globalization.CultureInfo.InvariantCulture)}," +
-        $"{p.Lon.ToString("F6", System.Globalization.CultureInfo.InvariantCulture)}";
+    // GraphHoppers GeoJSON-Konvention ist [lon, lat], entgegengesetzt zu unserem eigenen
+    // GeoPoint(Lat, Lon) - hier zentral konvertiert statt an jeder Aufrufstelle einzeln.
+    private static double[] ToLonLat(GeoPoint p) => [p.Lon, p.Lat];
+
+    private const int BlockedAreaPolygonSides = 12;
+    private const double MetersPerDegreeLat = 111_320.0;
+
+    private static GhCustomModel? BuildCustomModel(IReadOnlyList<BlockedArea> blockedAreas)
+    {
+        if (blockedAreas.Count == 0)
+            return null;
+
+        var features = new List<GhAreaFeature>(blockedAreas.Count);
+        var areaIds = new List<string>(blockedAreas.Count);
+        for (var i = 0; i < blockedAreas.Count; i++)
+        {
+            var id = $"blocked{i}";
+            areaIds.Add(id);
+            features.Add(new GhAreaFeature
+            {
+                Id = id,
+                Geometry = new GhPolygonGeometry { Coordinates = [BuildCirclePolygon(blockedAreas[i])] },
+            });
+        }
+
+        return new GhCustomModel
+        {
+            Priority = [new GhPriorityRule
+            {
+                If = string.Join(" || ", areaIds.Select(id => $"in_{id}")),
+                MultiplyBy = "0",
+            }],
+            Areas = new GhAreas { Features = features },
+        };
+    }
+
+    // Naeherung des Kreises als 12-Ecks-Polygon um BlockedArea.Center - flache
+    // Grad/Meter-Umrechnung reicht fuer die hier relevanten kleinen Radien (Zehner- bis
+    // niedrige Hunderter-Meter-Bereich) locker aus, echte Geodaesie waere hier ueberdimensioniert.
+    private static List<double[]> BuildCirclePolygon(BlockedArea area)
+    {
+        var latRad = area.Center.Lat * Math.PI / 180.0;
+        var ring = new List<double[]>(BlockedAreaPolygonSides + 1);
+        for (var i = 0; i <= BlockedAreaPolygonSides; i++)
+        {
+            var angle = 2 * Math.PI * (i % BlockedAreaPolygonSides) / BlockedAreaPolygonSides;
+            var latOffsetDeg = area.RadiusMeters * Math.Cos(angle) / MetersPerDegreeLat;
+            var lonOffsetDeg = area.RadiusMeters * Math.Sin(angle) / (MetersPerDegreeLat * Math.Cos(latRad));
+            ring.Add([area.Center.Lon + lonOffsetDeg, area.Center.Lat + latOffsetDeg]);
+        }
+        return ring;
+    }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    private sealed class GhRouteRequestBody
+    {
+        public required List<double[]> Points { get; set; }
+        public required string Profile { get; set; }
+        public bool PointsEncoded { get; set; } = false;
+        public bool Elevation { get; set; } = true;
+        public List<string> Details { get; set; } = ["surface"];
+        public string? Algorithm { get; set; }
+
+        [JsonPropertyName("round_trip.distance")]
+        public double? RoundTripDistance { get; set; }
+
+        [JsonPropertyName("round_trip.seed")]
+        public int? RoundTripSeed { get; set; }
+
+        public GhCustomModel? CustomModel { get; set; }
+    }
+
+    private sealed class GhCustomModel
+    {
+        public required List<GhPriorityRule> Priority { get; set; }
+        public required GhAreas Areas { get; set; }
+    }
+
+    private sealed class GhPriorityRule
+    {
+        public required string If { get; set; }
+        public required string MultiplyBy { get; set; }
+    }
+
+    private sealed class GhAreas
+    {
+        public string Type { get; set; } = "FeatureCollection";
+        public required List<GhAreaFeature> Features { get; set; }
+    }
+
+    private sealed class GhAreaFeature
+    {
+        public string Type { get; set; } = "Feature";
+        public required string Id { get; set; }
+        public required GhPolygonGeometry Geometry { get; set; }
+    }
+
+    private sealed class GhPolygonGeometry
+    {
+        public string Type { get; set; } = "Polygon";
+        public required List<List<double[]>> Coordinates { get; set; }
+    }
 
     private sealed class GhRouteResponse
     {

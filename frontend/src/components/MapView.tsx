@@ -1,9 +1,13 @@
 import { useEffect, useRef } from "react";
-import { Map as MapLibreMap, Marker, LngLatBounds } from "maplibre-gl";
+import { Map as MapLibreMap, Marker, LngLatBounds, Popup } from "maplibre-gl";
 import type { StyleSpecification, GeoJSONSource, ExpressionSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { FeatureCollection, LineString } from "geojson";
-import type { GeoPoint, RouteSegment, SurfaceSegment } from "../types";
+import type { FeatureCollection, LineString, Point } from "geojson";
+import type { GeoPoint, RouteSegment, SurfaceSegment, BlockedArea } from "../types";
+
+// Fester Radius fuer per Klick gesperrte Bereiche - kein UI-Element zum Anpassen, um die
+// Interaktion einfach zu halten (siehe CONCEPT.md Abschnitt 6.18).
+const DEFAULT_BLOCK_RADIUS_METERS = 40;
 
 const OSM_RASTER_STYLE: StyleSpecification = {
   version: 8,
@@ -56,14 +60,26 @@ interface MapViewProps {
   routeGeometry: GeoPoint[] | null;
   routeSegments: RouteSegment[] | null;
   surfaceSegments: SurfaceSegment[] | null;
+  blockedAreas: BlockedArea[];
+  onAddBlockedArea: (area: BlockedArea) => void;
 }
 
-export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSegments, surfaceSegments }: MapViewProps) {
+export function MapView({
+  startPoint,
+  onStartPointChange,
+  routeGeometry,
+  routeSegments,
+  surfaceSegments,
+  blockedAreas,
+  onAddBlockedArea,
+}: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const startMarkerRef = useRef<Marker | null>(null);
   const onStartPointChangeRef = useRef(onStartPointChange);
   onStartPointChangeRef.current = onStartPointChange;
+  const onAddBlockedAreaRef = useRef(onAddBlockedArea);
+  onAddBlockedAreaRef.current = onAddBlockedArea;
   // MapLibre's "load" event fires exactly once per map instance. isStyleLoaded() can also
   // transiently report false during unrelated tile activity long after the initial load, so
   // neither is safe to re-check on every route update - track it ourselves instead.
@@ -84,8 +100,29 @@ export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSe
       styleReadyRef.current = true;
     });
 
+    // Klick auf die Karte setzt nicht mehr direkt den Startpunkt, sondern zeigt eine
+    // Mini-Auswahl (Startpunkt setzen / Abschnitt hier sperren) - siehe CONCEPT.md 6.18.
     map.on("click", (e) => {
-      onStartPointChangeRef.current({ lat: e.lngLat.lat, lon: e.lngLat.lng });
+      const { lat, lng } = e.lngLat;
+      const popup = new Popup({ closeButton: true, closeOnClick: true, maxWidth: "none" })
+        .setLngLat(e.lngLat)
+        .setHTML(
+          '<div style="display:flex;flex-direction:column;gap:4px;min-width:200px">' +
+            '<button type="button" data-action="start" style="padding:6px 10px;cursor:pointer">Startpunkt setzen</button>' +
+            '<button type="button" data-action="block" style="padding:6px 10px;cursor:pointer;color:#dc2626">Abschnitt hier sperren</button>' +
+          "</div>",
+        )
+        .addTo(map);
+
+      const el = popup.getElement();
+      el.querySelector('[data-action="start"]')?.addEventListener("click", () => {
+        onStartPointChangeRef.current({ lat, lon: lng });
+        popup.remove();
+      });
+      el.querySelector('[data-action="block"]')?.addEventListener("click", () => {
+        onAddBlockedAreaRef.current({ lat, lon: lng, radiusMeters: DEFAULT_BLOCK_RADIUS_METERS });
+        popup.remove();
+      });
     });
 
     // MapLibre sizes its canvas from the container at construction time; in a flex
@@ -117,6 +154,46 @@ export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSe
       startMarkerRef.current.setLngLat([startPoint.lon, startPoint.lat]);
     }
   }, [startPoint]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const applyBlockedAreas = () => {
+      const geojson: FeatureCollection<Point> = {
+        type: "FeatureCollection",
+        features: blockedAreas.map((b) => ({
+          type: "Feature",
+          properties: {},
+          geometry: { type: "Point", coordinates: [b.lon, b.lat] },
+        })),
+      };
+      const existing = map.getSource("blocked-areas") as GeoJSONSource | undefined;
+      if (existing) {
+        existing.setData(geojson);
+      } else {
+        map.addSource("blocked-areas", { type: "geojson", data: geojson });
+        map.addLayer({
+          id: "blocked-areas-circle",
+          type: "circle",
+          source: "blocked-areas",
+          paint: {
+            "circle-radius": 14,
+            "circle-color": "#dc2626",
+            "circle-opacity": 0.35,
+            "circle-stroke-color": "#dc2626",
+            "circle-stroke-width": 2,
+          },
+        });
+      }
+    };
+
+    if (styleReadyRef.current) {
+      applyBlockedAreas();
+    } else {
+      map.once("load", applyBlockedAreas);
+    }
+  }, [blockedAreas]);
 
   useEffect(() => {
     const map = mapRef.current;

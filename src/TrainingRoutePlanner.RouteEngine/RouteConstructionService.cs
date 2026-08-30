@@ -159,7 +159,7 @@ public sealed class RouteConstructionService(
         waypoints.Add(request.StartPoint);
 
         var finalRoute = waypoints.Count > 2
-            ? await graphHopper.RouteThroughWaypointsAsync(waypoints, ct)
+            ? await graphHopper.RouteThroughWaypointsAsync(waypoints, request.BlockedAreas, ct)
             : roughLoop;
 
         CheckApproachBudget(request, finalRoute, warnings);
@@ -205,7 +205,7 @@ public sealed class RouteConstructionService(
         var stepDistances = steps.Select(s => EstimateDistance(s, request.Rider, gradient: 0.0)).ToArray();
         var totalDistance = stepDistances.Sum();
 
-        var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, ct);
+        var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, request.BlockedAreas, ct);
 
         for (var iteration = 0; iteration < MaxDistanceRefinementIterations; iteration++)
         {
@@ -230,7 +230,7 @@ public sealed class RouteConstructionService(
             if (relativeChange < DistanceRefinementToleranceFraction)
                 break;
 
-            roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, ct);
+            roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, request.BlockedAreas, ct);
         }
 
         return (roughLoop, stepDistances);

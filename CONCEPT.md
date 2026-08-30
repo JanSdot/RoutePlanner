@@ -778,6 +778,44 @@ den vorherigen Fixes (B1 `bicycle=no` weiterhin gemieden, Berlin-Mitte weiterhin
 `city` erkannt, `highway=track` weiterhin gemieden). Voller Testlauf (58/58) und ein
 End-to-End-Routen-Test über die lokale API ohne Warnungen bestätigt.
 
+## 6.18 Phase 2 — Streckenabschnitte auf der Karte sperren (durchgeführt)
+
+Nutzer wollte gezielt einzelne Streckenabschnitte sperren können, per Klick auf der Karte mit
+einer Auswahl (Startpunkt setzen ODER Abschnitt sperren) - eskaliert aus der Phase-4-Backlog-Idee
+"Nutzer können Segmente selbst bewerten/sperren".
+
+**GraphHoppers klassischer `block_area`-Parameter wurde entfernt** (Serverantwort verweist
+explizit auf `custom_model` mit `"areas"`). Das erfordert einen **kompletten Umbau von
+GraphHopperClient**: von GET mit Query-String auf POST mit JSON-Body, da nur so ein
+per-Request-`custom_model` mitgeschickt werden kann. Dabei zwei undokumentierte Stolpersteine
+per echtem Test statt Doku-Vertrauen gefunden:
+- `round_trip.distance`/`round_trip.seed` sind im JSON-Body **flache Schlüssel mit Punkt im
+  Namen** (`"round_trip.distance": 2000`), NICHT wie zunächst angenommen ein verschachteltes
+  `{"round_trip": {"distance": ...}}`-Objekt - ohne diese Erkenntnis wurde die Distanz komplett
+  ignoriert (angefragte 2000m wurden zu ~8900m).
+- Per-Request-`custom_model`-Overrides brauchten bei unserem Profil KEINE zusätzliche
+  Server-Freigabe (einfach ausprobiert statt vermutet) - erweitert das Server-Profil um die
+  mitgeschickten Regeln, ersetzt es nicht.
+
+**Umsetzung:** `BlockedArea(GeoPoint Center, double RadiusMeters)` in `RouteRequest`. Ein
+gesperrter Bereich wird als 12-Ecks-Polygon (Kreis-Näherung, flache Grad/Meter-Umrechnung reicht
+für die hier relevanten kleinen Radien) in `custom_model.areas` kodiert, mit einer
+Prioritäts-Regel `if: "in_blocked0 || in_blocked1 || ..."`, `multiply_by: "0"` - komplett
+ausgeschlossen, keine Abwertung (anders als Stadtgebiet/Untergrund: hier will der Nutzer explizit
+NIE durch diesen Bereich fahren). Wird an JEDEN GraphHopper-Aufruf durchgereicht (round_trip UND
+Wegpunkt-Routing).
+
+Frontend: Kartenklick zeigt jetzt ein MapLibre-Popup mit zwei Buttons statt direkt den Startpunkt
+zu setzen. Gesperrte Bereiche werden als roter Kreis-Layer angezeigt und in einer Liste in der
+Sidebar mit "Entfernen"-Button verwaltet. Fester Radius (40m) ohne eigenes UI-Element, um die
+Interaktion einfach zu halten.
+
+Getestet: 2 neue Unit-Tests für `GraphHopperClient` (prüfen die exakte JSON-Struktur des
+gesendeten Request-Body inkl. geschlossenem Polygon-Ring), volle Testsuite (60/60) nach dem
+API-Umbau grün. Live gegen echtes GraphHopper verifiziert: Route mit gesperrtem 40m-Bereich
+bleibt exakt 41m vom Zentrum entfernt (vorher führte sie mittendurch) - UI-Interaktion
+(Klick → Popup → Sperren → roter Kreis → Sidebar-Eintrag) im echten Chrome bestätigt.
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { MapView, colorForSegmentLabel } from "./components/MapView";
 import { WorkoutEditor } from "./components/WorkoutEditor";
 import { requestRoute, requestRouteGpx, buildWorkoutFitFile } from "./api";
-import type { GeoPoint, RouteResult, SegmentReusePreference, WorkoutBlockSpec } from "./types";
+import type { BlockedArea, GeoPoint, RouteResult, SegmentReusePreference, WorkoutBlockSpec } from "./types";
 import "./App.css";
 
 function formatDotNetTimeSpan(value: string): string {
@@ -49,6 +49,15 @@ export default function App() {
   const [maxTotalUnpavedMeters, setMaxTotalUnpavedMeters] = useState("");
   const [maxDisruptiveJunctions, setMaxDisruptiveJunctions] = useState("");
   const [maxRouteVariantAttempts, setMaxRouteVariantAttempts] = useState("");
+  const [blockedAreas, setBlockedAreas] = useState<BlockedArea[]>([]);
+
+  function addBlockedArea(area: BlockedArea) {
+    setBlockedAreas((prev) => [...prev, area]);
+  }
+
+  function removeBlockedArea(index: number) {
+    setBlockedAreas((prev) => prev.filter((_, i) => i !== index));
+  }
 
   const [inputMode, setInputMode] = useState<InputMode>("file");
   const [fitFile, setFitFile] = useState<File | null>(null);
@@ -88,6 +97,7 @@ export default function App() {
         maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
         maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
         maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
+        blockedAreas,
         fitFile: file,
       });
       setRouteResult(result);
@@ -114,6 +124,7 @@ export default function App() {
         maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
         maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
         maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
+        blockedAreas,
         fitFile: file,
       });
       downloadBlob(blob, "trainingsroute.gpx");
@@ -136,6 +147,7 @@ export default function App() {
               value={startPoint ? `${startPoint.lat.toFixed(5)}, ${startPoint.lon.toFixed(5)}` : "auf Karte klicken"}
             />
           </label>
+          <p className="hint">Auf die Karte klicken, um den Startpunkt zu setzen oder einen Abschnitt zu sperren.</p>
 
           <div className="mode-tabs">
             <button
@@ -251,6 +263,22 @@ export default function App() {
             </label>
           </fieldset>
 
+          {blockedAreas.length > 0 && (
+            <fieldset>
+              <legend>Gesperrte Abschnitte</legend>
+              <ul className="blocked-areas-list">
+                {blockedAreas.map((area, i) => (
+                  <li key={i}>
+                    {area.lat.toFixed(5)}, {area.lon.toFixed(5)} ({area.radiusMeters} m)
+                    <button type="button" onClick={() => removeBlockedArea(i)}>
+                      Entfernen
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </fieldset>
+          )}
+
           <button type="submit" disabled={loading || !startPoint || !hasWorkoutInput}>
             {loading ? "Route wird berechnet…" : "Route berechnen"}
           </button>
@@ -311,6 +339,8 @@ export default function App() {
           routeGeometry={routeResult?.geometry ?? null}
           routeSegments={routeResult?.segments ?? null}
           surfaceSegments={routeResult?.surfaceSegments ?? null}
+          blockedAreas={blockedAreas}
+          onAddBlockedArea={addBlockedArea}
         />
       </main>
     </div>

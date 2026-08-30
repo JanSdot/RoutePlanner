@@ -43,4 +43,9 @@ public sealed class RouteRequest
     /// immer nur ein einziger Versuch). Das feste Zeitbudget in RouteConstructionService bleibt
     /// unabhaengig davon als Sicherheitsnetz bestehen, siehe CONCEPT.md 6.12.</summary>
     public int? MaxRouteVariantAttempts { get; init; }
+
+    /// <summary>Vom Nutzer auf der Karte markierte Bereiche, die bei JEDER Routenberechnung
+    /// (round_trip UND Wegpunkt-Routing) komplett gemieden werden sollen, siehe CONCEPT.md
+    /// Abschnitt 6.18. Leer = keine Sperrungen.</summary>
+    public IReadOnlyList<BlockedArea> BlockedAreas { get; init; } = [];
 }

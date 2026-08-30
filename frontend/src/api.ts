@@ -27,6 +27,9 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   if (input.maxRouteVariantAttempts != null) {
     data.append("maxRouteVariantAttempts", String(input.maxRouteVariantAttempts));
   }
+  if (input.blockedAreas.length > 0) {
+    data.append("blockedAreas", JSON.stringify(input.blockedAreas));
+  }
   data.append("format", format);
   return data;
 }
