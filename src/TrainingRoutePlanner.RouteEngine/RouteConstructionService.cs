@@ -50,6 +50,18 @@ public sealed class RouteConstructionService(
     // Kompromisses, nicht ob ein Versuch die tatsaechlichen Nutzer-Grenzwerte erfuellt.
     private const double JunctionBadnessWeightMeters = 300.0;
 
+    // Bewertet, wie weit ein Versuch in der GESAMTDAUER vom Trainingsplan abweicht (siehe
+    // CheckDurationMismatch) - fehlte urspruenglich komplett in der Badness-Bewertung, wodurch
+    // ein round_trip-Seed, der zufaellig eine deutlich KUERZERE Schleife lieferte, automatisch
+    // "besser" abschnitt (weniger absolute unbefestigte Meter/Kreuzungen einer kuerzeren Route),
+    // obwohl er den eigentlichen Trainingsplan (z.B. 120 min GA1) komplett verfehlt - live
+    // beobachtet: 24 km/58 min statt der angeforderten ~120 min. 10 "Badness-Meter" pro Sekunde
+    // Abweichung sorgt dafuer, dass schon wenige Minuten Abweichung jede realistische
+    // Untergrund-/Kreuzungs-Differenz dominieren (60s*10=600 vs. eine einzelne Kreuzung=300),
+    // waehrend Abweichungen im Sekundenbereich (round_trip trifft die Zieldistanz ohnehin nie
+    // exakt) die Auswahl nicht unnoetig verzerren.
+    private const double DurationMismatchBadnessWeightMetersPerSecond = 10.0;
+
     // Trennt "ruhige" Bloecke (GA1/GA2, hohe Toleranz) von "Effort"-Bloecken, die einen
     // dedizierten Korridor brauchen (EB/SB/VO2max/Sprint) - siehe ZoneBands in Domain.
     private const double DedicatedCorridorScoreCutoff = 5.0;
@@ -80,6 +92,7 @@ public sealed class RouteConstructionService(
         // Mindestens 1, sonst wuerde eine versehentliche 0/negative Nutzereingabe die Schleife
         // nie durchlaufen und bestResult bliebe null.
         var maxAttempts = Math.Max(1, request.MaxRouteVariantAttempts ?? MaxSurfaceAvoidanceAttempts);
+        var prescribedTime = TimeSpan.FromTicks(request.Plan.Steps.Sum(s => s.Duration.Ticks));
 
         RouteResult? bestResult = null;
         var bestBadness = double.MaxValue;
@@ -95,8 +108,10 @@ public sealed class RouteConstructionService(
             var (totalUnpavedMeters, maxUnpavedSegmentMeters) =
                 EvaluateUnpavedSurfaces(result.SurfaceSegments, result.SmoothnessSegments);
             var junctionCount = corridorIndex.CountDisruptiveJunctionsNear(result.Geometry, JunctionProximityMeters);
+            var durationMismatchSeconds = Math.Abs((result.EstimatedTotalTime - prescribedTime).TotalSeconds);
 
-            var badness = totalUnpavedMeters + junctionCount * JunctionBadnessWeightMeters;
+            var badness = totalUnpavedMeters + junctionCount * JunctionBadnessWeightMeters
+                + durationMismatchSeconds * DurationMismatchBadnessWeightMetersPerSecond;
             if (badness < bestBadness)
             {
                 bestBadness = badness;
@@ -420,6 +435,13 @@ public sealed class RouteConstructionService(
         }
     }
 
+    // Prueft die Gesamtdauer der finalen Route GEGEN DEN TRAININGSPLAN in BEIDE Richtungen -
+    // zu lang (bestehende Pruefung: die Anfahrt/Korridor-Umwege ueberschreiten das
+    // Anfahrt-Budget aus 4.4) UND zu KURZ (fehlte urspruenglich: ein round_trip-Seed kann eine
+    // deutlich kuerzere Schleife liefern als angefordert, ohne dass GraphHopper das je meldet -
+    // live beobachtet als 24 km/58 min statt angeforderter ~120 min GA1, siehe auch
+    // DurationMismatchBadnessWeightMetersPerSecond). Dieselbe MaxApproachMinutes-Toleranz wird
+    // fuer beide Richtungen als symmetrisches Toleranzband um die Plandauer verwendet.
     private static void CheckApproachBudget(RouteRequest request, GraphHopperRoute finalRoute, List<RouteWarning> warnings)
     {
         var prescribedTicks = request.Plan.Steps.Sum(s => s.Duration.Ticks);
@@ -431,6 +453,16 @@ public sealed class RouteConstructionService(
             {
                 Message = $"Route ist {extraTime.TotalMinutes:F0} min länger als der reine Trainingsplan " +
                           $"(Budget: {request.MaxApproachMinutes:F0} min) - die nächste geeignete Strecke liegt weiter entfernt.",
+            });
+        }
+        else if (-extraTime.TotalMinutes > request.MaxApproachMinutes)
+        {
+            warnings.Add(new RouteWarning
+            {
+                Message = $"Route ist {-extraTime.TotalMinutes:F0} min KÜRZER als der reine Trainingsplan " +
+                          $"({request.Plan.Steps.Sum(s => s.Duration.TotalMinutes):F0} min) - im verfügbaren Straßennetz " +
+                          "konnte keine ausreichend lange Streckenführung gefunden werden, die auch die übrigen " +
+                          "gesetzten Grenzwerte einhält.",
             });
         }
     }

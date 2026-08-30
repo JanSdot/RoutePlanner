@@ -39,6 +39,13 @@ public class RouteConstructionServiceTests
         // Default: kein schlechter Smoothness-Anteil.
         public Func<int, IReadOnlyList<SurfaceSegment>>? SmoothnessSegmentsBySeed { get; set; }
 
+        // Simuliert GraphHoppers reale round_trip-Ungenauigkeit (die ZURUECKGEGEBENE Distanz
+        // muss nicht der ANGEFRAGTEN entsprechen) - Default: echofiert die angefragte Distanz
+        // (wie bisher), fuer Tests der Dauer-Abweichungs-Erkennung ueberschreibbar. Zweites
+        // Argument ist die urspruenglich ANGEFRAGTE Distanz, damit ein Test gezielt nur EINEN
+        // Seed abweichen lassen und die uebrigen unveraendert (echofiert) lassen kann.
+        public Func<int, double, double>? ActualDistanceMetersBySeed { get; set; }
+
         public List<IReadOnlyList<BlockedArea>> BlockedAreasReceived { get; } = [];
 
         public Task<GraphHopperRoute> RoundTripAsync(
@@ -58,8 +65,9 @@ public class RouteConstructionServiceTests
             };
             var surfaceSegments = SurfaceSegmentsBySeed?.Invoke(seed) ?? [];
             var smoothnessSegments = SmoothnessSegmentsBySeed?.Invoke(seed) ?? [];
+            var actualDistanceMeters = ActualDistanceMetersBySeed?.Invoke(seed, distanceMeters) ?? distanceMeters;
             return Task.FromResult(new GraphHopperRoute(
-                distanceMeters, TimeSpan.FromSeconds(distanceMeters / 8.0), geometry, surfaceSegments, smoothnessSegments));
+                actualDistanceMeters, TimeSpan.FromSeconds(actualDistanceMeters / 8.0), geometry, surfaceSegments, smoothnessSegments));
         }
 
         public Task<GraphHopperRoute> RouteThroughWaypointsAsync(
@@ -568,6 +576,72 @@ public class RouteConstructionServiceTests
 
         Assert.Equal([1, 2], ghClient.RoundTripSeeds);
         Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
+    }
+
+    [Fact]
+    public async Task FallbackSelection_PrefersCorrectDurationOverCleanerButTooShortRoute()
+    {
+        // Regressionstest fuer einen live beobachteten Bug (2026-08-31): ein round_trip-Seed kann
+        // eine deutlich KUERZERE Schleife liefern als angefordert (reale GraphHopper-
+        // Ungenauigkeit) - ohne Dauer-Abweichung in der Badness-Bewertung wurde ein technisch
+        // "sauberer" (0 unbefestigt), aber viel zu kurzer Versuch (24 km/58 min statt 120 min)
+        // faelschlich als "beste" Variante gewaehlt. Kein Versuch erfuellt hier je die
+        // Kreuzungs-Grenze (immer 3 > Limit 0), damit garantiert die Fallback-Badness-Auswahl
+        // getestet wird statt ein frueher Erfolg.
+        var corridors = new FakeCorridorIndex { JunctionCountResponder = _ => 3 };
+        var ghClient = new FakeGraphHopperClient
+        {
+            SurfaceSegmentsBySeed = seed => seed == 1 ? [] : UnpavedSegmentOfLength(500),
+            // Seed 1: "sauberer" Untergrund, aber GraphHopper liefert nur eine winzige Schleife
+            // zurueck - Dauer weicht massiv vom Trainingsplan ab. Seed 2: etwas unbefestigter
+            // Untergrund, aber die zurueckgegebene Distanz entspricht der angeforderten.
+            ActualDistanceMetersBySeed = (seed, requested) => seed == 1 ? 100.0 : requested,
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            MaxDisruptiveJunctions = 0,
+            MaxRouteVariantAttempts = 2,
+        });
+
+        // Seed 2 (500m unbefestigt, aber korrekte Dauer) haette ohne den Fix wegen des
+        // "saubereren" Untergrunds von Seed 1 verloren - jetzt gewinnt die korrekte Dauer
+        // (erkennbar an Seed 2s Oberflaechen-Marker "gravel", siehe UnpavedSegmentOfLength).
+        Assert.Equal("gravel", result.SurfaceSegments.Single().Surface);
+        Assert.Contains(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("KÜRZER"));
+    }
+
+    [Fact]
+    public async Task DurationUndershoot_WhenNoAttemptIsCloseEnough_AddsWarning()
+    {
+        // Wenn SELBST der beste Versuch die Dauer klar verfehlt (kein "guter" Versuch verfuegbar,
+        // anders als im vorherigen Test), soll das transparent gemacht werden statt stillschweigend
+        // eine viel zu kurze Route auszuliefern.
+        var corridors = new FakeCorridorIndex { JunctionCountResponder = _ => 3 };
+        var ghClient = new FakeGraphHopperClient
+        {
+            ActualDistanceMetersBySeed = (_, _) => 100.0,
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            MaxDisruptiveJunctions = 0,
+            MaxRouteVariantAttempts = 2,
+            MaxApproachMinutes = 5,
+        });
+
+        Assert.Contains(result.Warnings, w => w.Message.Contains("KÜRZER"));
     }
 
     [Fact]
