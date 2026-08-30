@@ -156,7 +156,7 @@ public sealed class RouteConstructionService(
         var warnings = new List<RouteWarning>();
         var maxApproachRadiusMeters = ComputeMaxApproachRadiusMeters(request);
 
-        var (roughLoop, stepDistances) = await RefineRoughLoopAsync(request, roundTripSeed, wind, ct);
+        var (roughLoop, stepDistances, stepGradients, stepHeadwinds) = await RefineRoughLoopAsync(request, roundTripSeed, wind, ct);
         var roughLoopLength = PolylineMath.TotalLengthMeters(roughLoop.Geometry);
         var totalDistance = stepDistances.Sum();
 
@@ -167,6 +167,8 @@ public sealed class RouteConstructionService(
         var waypointGroups = new List<(double Fraction, List<GeoPoint> Points)>();
         var reuseCache = new Dictionary<(double PowerBucket, double ScoreBucket), Corridor>();
         var segments = new List<RouteSegment>();
+        // Pro Schritt der gefundene Korridor (oder null) - fuer EstimateTotalTime, siehe dort.
+        var stepCorridors = new Corridor?[request.Plan.Steps.Count];
         var cumulativeDistance = 0.0;
 
         for (var i = 0; i < request.Plan.Steps.Count; i++)
@@ -184,6 +186,7 @@ public sealed class RouteConstructionService(
                 step, stepDistance, targetPoint, request.SegmentReuse, request.AllowUTurns, reuseCache, maxApproachRadiusMeters, warnings);
             if (corridor is not null)
             {
+                stepCorridors[i] = corridor;
                 // Korridor-Geometrie direkt uebernehmen statt aus der finalen Route
                 // herauszuschneiden - GraphHopper folgt zwischen exakt diesen zwei Punkten
                 // ohnehin derselben Strecke, da wir sie ja genau deswegen gewaehlt haben.
@@ -208,7 +211,13 @@ public sealed class RouteConstructionService(
             ? await graphHopper.RouteThroughWaypointsAsync(waypoints, request.BlockedAreas, ct)
             : roughLoop;
 
-        CheckApproachBudget(request, finalRoute, warnings);
+        // finalRoute.Time ist GraphHoppers EIGENE Schaetzung (fester 25 km/h Profil-Speed, siehe
+        // CONCEPT.md 6.17) - hat nichts mit dem Fahrerprofil/den Zonenleistungen zu tun. Die
+        // tatsaechlich angezeigte "Geschaetzte Zeit" wird stattdessen ueber unser eigenes
+        // physikbasiertes Modell rekonstruiert, siehe EstimateTotalTime (CONCEPT.md 6.23/7).
+        var estimatedTotalTime = EstimateTotalTime(request, finalRoute.DistanceMeters, stepDistances, stepGradients, stepHeadwinds, stepCorridors);
+
+        CheckApproachBudget(request, estimatedTotalTime, warnings);
         if (!request.AllowUTurns)
             CheckForUTurns(finalRoute, warnings);
 
@@ -216,13 +225,77 @@ public sealed class RouteConstructionService(
         {
             Geometry = finalRoute.Geometry,
             TotalDistanceMeters = finalRoute.DistanceMeters,
-            EstimatedTotalTime = finalRoute.Time,
+            EstimatedTotalTime = estimatedTotalTime,
             Warnings = warnings,
             Segments = segments,
             SurfaceSegments = finalRoute.SurfaceSegments,
             SmoothnessSegments = finalRoute.SmoothnessSegments,
             Wind = wind,
         };
+    }
+
+    /// <summary>Rekonstruiert die Gesamtzeit ueber das eigene physikbasierte Modell statt
+    /// GraphHoppers `time`-Feld zu uebernehmen (siehe CONCEPT.md 6.23/7 - GraphHoppers Wert
+    /// nutzt einen festen 25 km/h Profil-Speed, unabhaengig vom tatsaechlichen Fahrerprofil).
+    /// Effort-Schritte MIT gefundenem Korridor nutzen dessen TATSAECHLICHE Laenge (kann von der
+    /// urspruenglichen Schaetzung abweichen, z.B. durch die Fallback-Eskalation in
+    /// FindCorridorWithFallback). Alle uebrigen Schritte (ruhige Bloecke UND Effort-Schritte ohne
+    /// gefundenen Korridor) teilen sich die tatsaechlich VERBLEIBENDE Distanz
+    /// (finalRoute.DistanceMeters abzueglich aller Korridor-Laengen) proportional zu ihrem
+    /// urspruenglich geschaetzten Anteil auf - das faengt GraphHoppers round_trip-Ungenauigkeit
+    /// (die tatsaechliche Distanz weicht oft von der angeforderten ab, siehe CONCEPT.md 6.23) mit
+    /// ein, statt naiv die Schaetzungen aus RefineRoughLoopAsync unveraendert aufzusummieren.</summary>
+    private TimeSpan EstimateTotalTime(
+        RouteRequest request,
+        double actualTotalDistanceMeters,
+        double[] stepDistances,
+        double[] stepGradients,
+        double[] stepHeadwinds,
+        Corridor?[] stepCorridors)
+    {
+        var steps = request.Plan.Steps;
+        var corridorDistanceMeters = 0.0;
+        var corridorTimeSeconds = 0.0;
+        var remainingOriginalDistanceMeters = 0.0;
+
+        for (var i = 0; i < steps.Count; i++)
+        {
+            var corridor = stepCorridors[i];
+            if (corridor is null)
+            {
+                remainingOriginalDistanceMeters += stepDistances[i];
+                continue;
+            }
+            corridorDistanceMeters += corridor.LengthMeters;
+            corridorTimeSeconds += TimeForDistanceOrPrescribed(
+                corridor.LengthMeters, steps[i], request.Rider, stepGradients[i], stepHeadwinds[i]).TotalSeconds;
+        }
+
+        var remainingActualDistanceMeters = Math.Max(0.0, actualTotalDistanceMeters - corridorDistanceMeters);
+        var remainingTimeSeconds = 0.0;
+        for (var i = 0; i < steps.Count; i++)
+        {
+            if (stepCorridors[i] is not null)
+                continue;
+            var share = remainingOriginalDistanceMeters <= 0 ? 0.0 : stepDistances[i] / remainingOriginalDistanceMeters;
+            var allocatedDistanceMeters = remainingActualDistanceMeters * share;
+            remainingTimeSeconds += TimeForDistanceOrPrescribed(
+                allocatedDistanceMeters, steps[i], request.Rider, stepGradients[i], stepHeadwinds[i]).TotalSeconds;
+        }
+
+        return TimeSpan.FromSeconds(corridorTimeSeconds + remainingTimeSeconds);
+    }
+
+    // PowerSpeedModel.TimeForDistance liefert TimeSpan.MaxValue bei nicht erreichbarer
+    // Geschwindigkeit (z.B. 0 Watt) - dessen TotalSeconds in eine Summe einfliessen zu lassen
+    // wuerde diese unbrauchbar machen (Ueberlauf/absurd hoher Wert). Faellt in diesem seltenen
+    // Randfall auf die reine Plandauer des Schritts zurueck statt die gesamte Zeitschaetzung zu
+    // zerstoeren.
+    private TimeSpan TimeForDistanceOrPrescribed(
+        double distanceMeters, TrainingStep step, RiderProfile profile, double gradient, double headwindMps)
+    {
+        var time = powerModel.TimeForDistance(distanceMeters, step.TargetPowerWatts, profile, gradient, headwindMps);
+        return time == TimeSpan.MaxValue ? step.Duration : time;
     }
 
     /// <summary>Kombiniert Oberflaechen- (surface=unpaved/gravel/...) UND Rauhigkeits-Warnungen
@@ -266,13 +339,20 @@ public sealed class RouteConstructionService(
     /// Die Position jedes Schritts entlang der Schleife wird pro Iteration anhand der
     /// Distanzen der VORHERIGEN Iteration bestimmt (nicht der gerade neu berechneten) - sonst
     /// haengt die Positionsbestimmung von einem Wert ab, den sie selbst gerade erst liefert.</summary>
-    private async Task<(GraphHopperRoute RoughLoop, double[] StepDistances)> RefineRoughLoopAsync(RouteRequest request, int roundTripSeed, WindConditions? wind, CancellationToken ct)
+    private async Task<(GraphHopperRoute RoughLoop, double[] StepDistances, double[] StepGradients, double[] StepHeadwinds)> RefineRoughLoopAsync(
+        RouteRequest request, int roundTripSeed, WindConditions? wind, CancellationToken ct)
     {
         var steps = request.Plan.Steps;
         // Erste (flache) Schaetzung kennt noch keine Streckengeometrie, kann also weder
         // Steigung noch Fahrtrichtung/Windkomponente beruecksichtigen - wie gradient=0 wird auch
         // headwind=0 erst in den folgenden Iterationen anhand der tatsaechlichen Route verfeinert.
         var stepDistances = steps.Select(s => EstimateDistance(s, request.Rider, gradient: 0.0, headwindMps: 0.0)).ToArray();
+        // Gradient/Wind der LETZTEN Iteration werden an EstimateTotalTime weitergereicht (siehe
+        // dort), damit die abschliessende Zeitschaetzung dieselben Umgebungsbedingungen nutzt,
+        // die auch die Distanzschaetzung bestimmt haben - initial 0, falls unten nie ueberschrieben
+        // (z.B. bei einem einzigen, sofort konvergenten Schritt ohne Schleifendurchlauf).
+        var stepGradients = new double[steps.Count];
+        var stepHeadwinds = new double[steps.Count];
         var totalDistance = stepDistances.Sum();
 
         var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, request.BlockedAreas, ct);
@@ -293,6 +373,8 @@ public sealed class RouteConstructionService(
                     var bearing = PolylineMath.AverageBearingDegrees(roughLoop.Geometry, fraction * roughLoopLength, BearingSampleWindowMeters);
                     headwindMps = ComputeHeadwindComponentMps(bearing, wind);
                 }
+                stepGradients[i] = gradient;
+                stepHeadwinds[i] = headwindMps;
                 refined[i] = EstimateDistance(steps[i], request.Rider, gradient, headwindMps);
                 cumulative += stepDistances[i];
             }
@@ -309,7 +391,7 @@ public sealed class RouteConstructionService(
             roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, request.BlockedAreas, ct);
         }
 
-        return (roughLoop, stepDistances);
+        return (roughLoop, stepDistances, stepGradients, stepHeadwinds);
     }
 
     private double EstimateDistance(TrainingStep step, RiderProfile profile, double gradient, double headwindMps) =>
@@ -442,11 +524,11 @@ public sealed class RouteConstructionService(
     // live beobachtet als 24 km/58 min statt angeforderter ~120 min GA1, siehe auch
     // DurationMismatchBadnessWeightMetersPerSecond). Dieselbe MaxApproachMinutes-Toleranz wird
     // fuer beide Richtungen als symmetrisches Toleranzband um die Plandauer verwendet.
-    private static void CheckApproachBudget(RouteRequest request, GraphHopperRoute finalRoute, List<RouteWarning> warnings)
+    private static void CheckApproachBudget(RouteRequest request, TimeSpan estimatedTotalTime, List<RouteWarning> warnings)
     {
         var prescribedTicks = request.Plan.Steps.Sum(s => s.Duration.Ticks);
         var prescribedTime = TimeSpan.FromTicks(prescribedTicks);
-        var extraTime = finalRoute.Time - prescribedTime;
+        var extraTime = estimatedTotalTime - prescribedTime;
         if (extraTime.TotalMinutes > request.MaxApproachMinutes)
         {
             warnings.Add(new RouteWarning

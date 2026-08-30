@@ -239,12 +239,15 @@ public class RouteConstructionServiceTests
     [Fact]
     public async Task ApproachBudgetExceeded_AddsWarning()
     {
-        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
-        var ghClient = new FakeGraphHopperClient { FinalRouteTime = TimeSpan.FromMinutes(90) };
+        // Ein deutlich zu langer Korridor (100 km statt der fuer 5 min EB-Tempo benoetigten
+        // Laenge) simuliert die reale Ursache dieser Warnung: FindCorridorWithFallback musste
+        // (oder hat) einen viel laengeren Korridor als angefordert gewaehlt - seit CONCEPT.md
+        // 6.23/7 bestimmt die tatsaechliche Korridor-Laenge (nicht mehr GraphHoppers eigenes
+        // time-Feld) die Zeitschaetzung.
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor(length: 100_000) };
+        var ghClient = new FakeGraphHopperClient();
         var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
-        // Effort-Schritt noetig, damit RouteThroughWaypointsAsync (und damit FinalRouteTime)
-        // ueberhaupt greift - ein reiner GA1-Plan wuerde nie ueber den Wegpunkt-Pfad laufen.
         var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
 
         var result = await service.BuildRouteAsync(new RouteRequest
