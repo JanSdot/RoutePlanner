@@ -405,6 +405,35 @@ siehe ZoneBands), Encoder wirft `NotSupportedException` bei einem Sprint-Block.
 End-to-End-Verifikation: Editor-Plan → generierte FIT-Bytes → vollständige Routenberechnung mit
 korrekt zugeordnetem Segment, live im echten Chrome bestätigt.
 
+## 6.7 Phase 2 — Deployment auf Render.com (durchgeführt)
+
+Backend (Docker), GraphHopper (Docker) und Frontend (Static Site) als Render-Blueprint
+(`render.yaml`) deployt, siehe [DEPLOY.md](DEPLOY.md). Zwei reale Produktions-Bugs erst nach dem
+Live-Deploy gefunden (in keinem lokalen Test/Docker-Smoke-Test vorher aufgefallen):
+
+- **API-Container crashte beim Start** mit `IOException: configured user limit (128) on
+  inotify instances reached`. Renders Container-Sandbox erlaubt nur sehr wenige inotify-Watches;
+  ASP.NET Core registriert standardmäßig einen `FileSystemWatcher` pro `appsettings*.json` für
+  Runtime-Reload. Fix: `DOTNET_hostBuilder__reloadConfigOnChange=false` als Env-Var (wird von
+  `CreateBuilder` schon beim Bootstrap gelesen) — Config ändert sich bei uns ohnehin nur per
+  Redeploy, Runtime-Reload wird nie gebraucht.
+- **Frontend berechnete Routen korrekt, zeichnete aber nie eine Linie** — GeoJSON-Sources
+  blieben permanent ungeladen, kein Fehler irgendwo. Ursache (gefunden durch direktes Inspizieren
+  von MapLibres internem Tile-Manager/Actor-State im echten Browser): maplibre-gl bringt seinen
+  eigenen Web Worker mit; sobald Rolldown (Vite 8s Bundler) diesen Code für den Produktions-Build
+  selbst transformiert/neu emittiert — egal ob als eigener Chunk oder inline, minifiziert oder
+  nicht, alle Kombinationen getestet — hört das Zusammenspiel zwischen Hauptthread und Worker
+  stillschweigend auf zu funktionieren. Der Dev-Server war davon nie betroffen
+  (`optimizeDeps.exclude` liefert node_modules unangetastet aus), das gilt aber nur für den
+  Dev-Server, nicht für `vite build`. Fix: `postinstall`-Skript kopiert maplibre-gls eigene,
+  unveränderte Dist-Dateien nach `public/vendor/maplibre-gl`; `build.rollupOptions.external`
+  hält den `"maplibre-gl"`-Import komplett aus Rolldowns Bundling raus, eine Import-Map in
+  `index.html` löst ihn zur Laufzeit im Browser zur unveränderten Vendor-Kopie auf.
+
+Beide Bugs zeigten sich ausschließlich im echten Produktions-Build unter Render — Lehre für
+künftige Deployments: den tatsächlichen `vite build`-Output lokal (z. B. via `vite preview`)
+in einem echten Browser testen, nicht nur `vite dev` und den API-Container isoliert.
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,
