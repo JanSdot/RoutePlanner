@@ -20,10 +20,17 @@ public sealed class RouteConstructionService(
 
     // Nur relevant, wenn RouteRequest.MaxUnpavedSegmentMeters/MaxTotalUnpavedMeters gesetzt
     // sind - jeder Versuch nutzt einen anderen round_trip-Seed und damit eine andere
-    // Streckenfuehrung. Ohne Erfolg wird der Versuch mit der geringsten Gesamtlaenge
-    // unbefestigter Abschnitte zurueckgegeben, mit Warnung statt Garantie (siehe
-    // RouteRequest.MaxUnpavedSegmentMeters).
-    private const int MaxSurfaceAvoidanceAttempts = 5;
+    // Streckenfuehrung. Bricht beim ERSTEN Versuch ab, der die Grenzwerte einhaelt (schnell im
+    // Normalfall - das GraphHopper-Profil bewertet unbefestigte Oberflaechen seit 6.12 selbst
+    // ab, ein einzelner Versuch trifft die Grenzwerte daher meistens schon). Ohne Erfolg wird
+    // der Versuch mit der geringsten Gesamtlaenge unbefestigter Abschnitte zurueckgegeben, mit
+    // Warnung statt Garantie. MaxSurfaceAvoidanceTimeBudget ist das Sicherheitsnetz gegen genau
+    // die Situation, die live einmal zu einem kompletten Timeout gefuehrt hat (Render, unrealistisch
+    // enge Grenzwerte, siehe CONCEPT.md 6.12): ein einzelner Versuch dauert dort im warmen
+    // Zustand ~15s (lokal ~3s) - ohne Zeitbudget wuerden bei unerfuellbaren Limits IMMER alle
+    // Versuche durchlaufen, weit ueber jedes sinnvolle Anfrage-Timeout hinaus.
+    private const int MaxSurfaceAvoidanceAttempts = 10;
+    private static readonly TimeSpan MaxSurfaceAvoidanceTimeBudget = TimeSpan.FromSeconds(45);
 
     // Trennt "ruhige" Bloecke (GA1/GA2, hohe Toleranz) von "Effort"-Bloecken, die einen
     // dedizierten Korridor brauchen (EB/SB/VO2max/Sprint) - siehe ZoneBands in Domain.
@@ -43,15 +50,14 @@ public sealed class RouteConstructionService(
         if (request.MaxUnpavedSegmentMeters is null && request.MaxTotalUnpavedMeters is null)
             return await BuildRouteAttemptAsync(request, RoundTripSeedBase, ct);
 
-        // Immer alle Versuche durchrechnen und den mit dem geringsten unbefestigten Anteil
-        // waehlen - nicht einfach den ERSTEN nehmen, der die Grenzwerte unterschreitet, sonst
-        // koennte ein spaeterer Versuch mit deutlich weniger Untergrund-Anteil ungenutzt bleiben.
         RouteResult? bestResult = null;
         var bestUnpavedTotalMeters = double.MaxValue;
-        var bestSatisfiesLimits = false;
+        var attemptsMade = 0;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         for (var attempt = 0; attempt < MaxSurfaceAvoidanceAttempts; attempt++)
         {
+            attemptsMade++;
             var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, ct);
             var (totalUnpavedMeters, maxUnpavedSegmentMeters) = EvaluateUnpavedSurfaces(result.SurfaceSegments);
 
@@ -59,19 +65,21 @@ public sealed class RouteConstructionService(
             {
                 bestUnpavedTotalMeters = totalUnpavedMeters;
                 bestResult = result;
-                var withinSegmentLimit = request.MaxUnpavedSegmentMeters is not double segLimit || maxUnpavedSegmentMeters <= segLimit;
-                var withinTotalLimit = request.MaxTotalUnpavedMeters is not double totalLimit || totalUnpavedMeters <= totalLimit;
-                bestSatisfiesLimits = withinSegmentLimit && withinTotalLimit;
             }
-        }
 
-        if (bestSatisfiesLimits)
-            return bestResult!;
+            var withinSegmentLimit = request.MaxUnpavedSegmentMeters is not double segLimit || maxUnpavedSegmentMeters <= segLimit;
+            var withinTotalLimit = request.MaxTotalUnpavedMeters is not double totalLimit || totalUnpavedMeters <= totalLimit;
+            if (withinSegmentLimit && withinTotalLimit)
+                return result;
+
+            if (stopwatch.Elapsed >= MaxSurfaceAvoidanceTimeBudget)
+                break;
+        }
 
         var warnings = bestResult!.Warnings.ToList();
         warnings.Add(new RouteWarning
         {
-            Message = $"Keine der {MaxSurfaceAvoidanceAttempts} probierten Streckenvarianten hielt die " +
+            Message = $"Keine der {attemptsMade} probierten Streckenvarianten hielt die " +
                       "Untergrund-Grenzwerte ein - die Route mit dem geringsten Anteil unbefestigter " +
                       $"Abschnitte ({bestUnpavedTotalMeters:F0} m insgesamt) wurde stattdessen verwendet.",
         });

@@ -580,6 +580,51 @@ am Stadtrand liegt und die Route von dort aus nie in dichtere Gebiete musste; di
 Abwertungs-Regel wirkt also erst, wenn eine Route tatsächlich versucht, durch dichter besiedeltes
 Gebiet zu führen.
 
+## 6.12 Phase 2 — Untergrund-Vermeidung: echter Produktions-Fund und Fix (durchgeführt)
+
+Nutzer meldete zwei Beobachtungen bei einem realen Test mit sehr strengen Grenzwerten
+(`MaxUnpavedSegmentMeters=5`, `MaxTotalUnpavedMeters=10`, 120-min-GA1-Plan, 53 km): (1) die
+verwendete Route hatte trotzdem viel unbefestigten Untergrund (4831 m) und (2) der GPX-Download
+schien nicht mehr zu funktionieren. Direkt gegen die Live-Render-Instanz reproduziert statt nur
+lokal vermutet:
+
+- Eine EINZELNE Routenberechnung ganz ohne Limit brauchte auf Render 15-33 s (warm/kalt) - lokal
+  nur ca. 3 s. Ursache dafür nicht abschließend geklärt (vermutlich geteilte/gedrosselte CPU auf
+  dem "Standard"-Plan plus die private Netzwerkanbindung zu GraphHopper), aber klar gemessen.
+- Der Untergrund-Vermeidungs-Loop aus 6.9 lief bei den o.g. (praktisch unerfüllbaren) Limits
+  IMMER alle 5 Versuche durch (da "immer den besten von allen nehmen" aus einer vorherigen
+  Iteration bewusst nie vorzeitig abbricht) - 5 × 15-33 s ergibt genau die Größenordnung, bei der
+  sowohl der JSON- als auch der GPX-Request (der die Berechnung komplett neu anstößt statt das
+  JSON-Ergebnis wiederzuverwenden) live nachweislich in ein komplettes Timeout liefen (>90 s ohne
+  jede Antwort, curl-Test gegen die Live-URL).
+
+**Fix, mehrteilig:**
+- `RouteConstructionService.BuildRouteAsync` bricht jetzt wieder beim ERSTEN Versuch ab, der die
+  Grenzwerte einhält (Rückkehr von "immer alle durchrechnen" aus 6.9 - jener Ansatz war zwar
+  gründlicher, aber genau die hier gefundene Ursache des Timeouts). `MaxSurfaceAvoidanceAttempts`
+  gleichzeitig von 5 auf 10 erhöht (schadet jetzt nicht mehr, da der Normalfall dank der
+  folgenden Profiländerung meist schon beim ersten Versuch durchkommt) und ein hartes
+  Zeitbudget (`MaxSurfaceAvoidanceTimeBudget`, 45 s) als Sicherheitsnetz ergänzt - bricht auch
+  bei unrealistisch strengen Nutzer-Limits nach spätestens 45 s ab und liefert den bisher besten
+  Versuch mit Warnung, statt endlos weiterzuprobieren.
+- GraphHopper-Profil bewertet unbefestigte `surface`-Werte jetzt direkt mit `multiply_by: 0.5` ab
+  (analog zu MOTORWAY/`bike_access`/`urban_density`) - macht schon den ERSTEN Versuch deutlich
+  wahrscheinlicher konform, statt rein auf zufällig günstige round_trip-Seeds zu hoffen. Gleiche
+  Denyliste-Logik wie `SurfaceClassifier.IsUnpaved` (Domain), aus GraphHoppers eigenem
+  (gröberen) `surface`-Enum nachgebildet.
+
+**Warum 5 m/10 m als Limit ohnehin nie erfüllbar gewesen wären:** so strenge Werte verbieten
+praktisch jede noch so kurze unbefestigte Kreuzung/Seitenstreifen - realistisch nutzbare Werte
+liegen eher im drei- bis vierstelligen Meterbereich. Das ändert nichts an der Notwendigkeit des
+Zeitbudgets (ein Nutzer kann jederzeit versehentlich einen unerfüllbaren Wert eintragen), macht
+aber verständlich, warum ausgerechnet dieser Testfall beide Probleme gleichzeitig aufgedeckt hat.
+
+Getestet: bestehende Unit-Tests auf frühzeitigen Abbruch zurückgeführt (statt "immer alle
+Seeds"), neuer Test für "alle 10 Versuche ausgeschöpft, bester bei Gleichstand gewinnt". Der
+Zeitbudget-Pfad selbst ist bewusst nicht unit-getestet (bräuchte echte Verzögerungen oder eine
+Testbarkeits-Naht einzig für diesen Zweck) - Vertrauen kommt aus der einfachen, leicht
+nachvollziehbaren `Stopwatch`-Prüfung und der Live-Verifikation gegen Render.
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,

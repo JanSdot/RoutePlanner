@@ -25,6 +25,14 @@ graphhopper:
           # dort unmoeglich machen. Siehe CONCEPT.md Abschnitt 6.11.
           - if: "urban_density == CITY"
             multiply_by: "0.5"
+          # Rauen/unbefestigten Untergrund abwerten, nicht ausschliessen - macht bereits den
+          # ersten round_trip-Versuch deutlich wahrscheinlicher konform mit den
+          # Untergrund-Limits aus 6.9, statt rein auf zufaellig guenstige Seeds zu hoffen. Siehe
+          # CONCEPT.md Abschnitt 6.12. "missing"/PAVED/ASPHALT/CONCRETE/PAVING_STONES bewusst
+          # nicht abgewertet - siehe SurfaceClassifier.IsUnpaved (Domain) fuer dieselbe
+          # Denyliste-Begruendung.
+          - if: "surface == UNPAVED || surface == COMPACTED || surface == FINE_GRAVEL || surface == GRAVEL || surface == GROUND || surface == DIRT || surface == GRASS || surface == SAND || surface == COBBLESTONE"
+            multiply_by: "0.5"
         speed:
           - if: "true"
             limit_to: "25"
