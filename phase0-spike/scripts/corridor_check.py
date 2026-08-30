@@ -32,7 +32,22 @@ ROAD_HIGHWAY_TYPES = {
 HARD_EXCLUSION = math.inf
 ROUNDABOUT_PENALTY = 2.0
 GIVE_WAY_PENALTY = 1.0
-UNMARKED_JUNCTION_PENALTY = 0.3
+DEFACTO_PRIORITY_PENALTY = 0.2   # unsere Strasse ist an der Kreuzung eindeutig hoeherrangig
+RECHTS_VOR_LINKS_PENALTY = 1.0   # gleich-/hoeherrangige Kreuzung ohne Beschilderung -> in D
+                                 # gesetzliche Rechts-vor-links-Pflicht, genauso stoerend wie
+                                 # ein Give-way-Schild (muss aktiv nach rechts schauen/bremsen)
+
+# Grobe Rangfolge deutscher Strassenklassen zur Vorfahrt-Abschaetzung an unbeschilderten
+# Kreuzungen (Proxy, da "echte" Vorfahrtsregelung in OSM kaum flaechendeckend getaggt ist)
+HIGHWAY_RANK = {
+    "trunk": 6, "trunk_link": 6,
+    "primary": 5, "primary_link": 5,
+    "secondary": 4, "secondary_link": 4,
+    "tertiary": 3, "tertiary_link": 3,
+    "unclassified": 2,
+    "residential": 1,
+    "living_street": 0,
+}
 
 SCORE_THRESHOLDS = {
     "VO2max/Sprint (Schwelle ~1)": 1.0,
@@ -128,33 +143,52 @@ def pick_straightest(coords, prev_id, cur_id, candidates):
     return best[1]
 
 
-def classify_node_scores(handler: NetworkHandler) -> dict:
-    scores = {}
-    g = handler.graph
-    for node in g.nodes:
-        degree = g.degree(node)
-        if node in handler.hard_nodes:
-            scores[node] = HARD_EXCLUSION
-        elif node in handler.roundabout_nodes:
-            scores[node] = ROUNDABOUT_PENALTY
-        elif node in handler.give_way_nodes:
-            scores[node] = GIVE_WAY_PENALTY
-        elif degree >= 3:
-            scores[node] = UNMARKED_JUNCTION_PENALTY
-        else:
-            scores[node] = 0.0
-    return scores
+def static_tag_score(node, handler: NetworkHandler):
+    """Score, der NICHT von der Durchfahrtsrichtung abhaengt (Ampel/Stopp/Kreisverkehr/
+    Give-way sind feste OSM-Tags). None = unbeschildert, haengt von Fahrtrichtung +
+    Strassenklassen ab (siehe junction_penalty)."""
+    if node in handler.hard_nodes:
+        return HARD_EXCLUSION
+    if node in handler.roundabout_nodes:
+        return ROUNDABOUT_PENALTY
+    if node in handler.give_way_nodes:
+        return GIVE_WAY_PENALTY
+    return None
 
 
-def extract_corridors(g: nx.Graph, node_scores: dict, coords: dict) -> list:
+def junction_penalty(g: nx.Graph, prev, cur, nxt):
+    """Score-Beitrag einer unbeschilderten Kreuzung: vergleicht die Strassenklasse
+    unserer Fahrtrichtung mit den kreuzenden Strassen. Nur wenn wir eindeutig
+    hoeherrangig sind, gilt faktische Vorfahrt - sonst greift (in Deutschland) die
+    gesetzliche Rechts-vor-links-Regel, die genauso zum Abbremsen/Schauen zwingt wie
+    ein Give-way-Schild. Siehe CONCEPT.md Abschnitt 3.4/4.1."""
+    if g.degree(cur) < 3:
+        return 0.0
+    incoming_rank = HIGHWAY_RANK.get(g[prev][cur].get("highway"), 0)
+    crossing_ranks = [
+        HIGHWAY_RANK.get(g[cur][nbr].get("highway"), 0)
+        for nbr in g.neighbors(cur)
+        if nbr != prev and nbr != nxt
+    ]
+    if not crossing_ranks:
+        return 0.0
+    if incoming_rank > max(crossing_ranks):
+        return DEFACTO_PRIORITY_PENALTY
+    return RECHTS_VOR_LINKS_PENALTY
+
+
+def extract_corridors(g: nx.Graph, handler: NetworkHandler, coords: dict) -> list:
     """Zerlegt den Graphen in maximale Ketten, die NUR an harten Ausschluss-Knoten
     (Ampel/Stopp) oder Sackgassen enden - laeuft durch alle weichen Kreuzungen
     hindurch (Kreisverkehr, Give-way, unmarkierte Kreuzung), siehe CONCEPT.md 4.1."""
     visited_edges = set()
     corridors = []
 
+    def is_hard(node):
+        return static_tag_score(node, handler) == HARD_EXCLUSION
+
     for start_node in list(g.nodes):
-        if node_scores.get(start_node) != HARD_EXCLUSION:
+        if not is_hard(start_node):
             continue  # nur von harten Ausschluss-Knoten aus starten
         for neighbor in g.neighbors(start_node):
             edge_key = frozenset((start_node, neighbor))
@@ -164,7 +198,7 @@ def extract_corridors(g: nx.Graph, node_scores: dict, coords: dict) -> list:
             path_nodes = [start_node, neighbor]
             visited_edges.add(edge_key)
             prev, cur = start_node, neighbor
-            while node_scores.get(cur) != HARD_EXCLUSION:
+            while not is_hard(cur):
                 candidates = [
                     n for n in g.neighbors(cur)
                     if n != prev and frozenset((cur, n)) not in visited_edges
@@ -181,15 +215,24 @@ def extract_corridors(g: nx.Graph, node_scores: dict, coords: dict) -> list:
     return corridors
 
 
-def corridor_profile(g: nx.Graph, node_scores: dict, path_nodes: list):
+def corridor_profile(g: nx.Graph, handler: NetworkHandler, path_nodes: list):
     dist = [0.0]
     score = [0.0]
-    for a, b in zip(path_nodes, path_nodes[1:]):
+    n = len(path_nodes)
+    for i in range(1, n):
+        a, b = path_nodes[i - 1], path_nodes[i]
         edge_len = g[a][b]["length"]
-        node_score = node_scores.get(b, 0.0)
-        if node_score == HARD_EXCLUSION:
-            node_score = 0.0  # Endpunkt ist Korridorgrenze, keine Durchquerung
         dist.append(dist[-1] + edge_len)
+
+        tag_score = static_tag_score(b, handler)
+        if tag_score == HARD_EXCLUSION:
+            node_score = 0.0  # Endpunkt ist Korridorgrenze, keine Durchquerung
+        elif tag_score is not None:
+            node_score = tag_score
+        elif i + 1 < n:
+            node_score = junction_penalty(g, a, b, path_nodes[i + 1])
+        else:
+            node_score = 0.0  # Korridorende (Sackgasse), keine weitere Kreuzung
         score.append(score[-1] + node_score)
     return dist, score
 
@@ -234,15 +277,14 @@ def main():
     print(f"Kreisverkehr-Knoten: {len(handler.roundabout_nodes)}")
     print(f"Give-way-Knoten: {len(handler.give_way_nodes)}")
 
-    node_scores = classify_node_scores(handler)
-    corridors = extract_corridors(g, node_scores, handler.coords)
+    corridors = extract_corridors(g, handler, handler.coords)
     print(f"Gefundene Korridore (Ketten zwischen Kreuzungen/Ausschluss-Knoten): {len(corridors)}")
 
     results = {name: {ml: 0 for ml in MIN_LENGTHS_M} for name in SCORE_THRESHOLDS}
     longest_ok = {name: {ml: 0.0 for ml in MIN_LENGTHS_M} for name in SCORE_THRESHOLDS}
 
     for path_nodes in corridors:
-        dist, score = corridor_profile(g, node_scores, path_nodes)
+        dist, score = corridor_profile(g, handler, path_nodes)
         total_len = dist[-1]
         if total_len < min(MIN_LENGTHS_M):
             continue
@@ -270,7 +312,7 @@ def main():
     lengths = []
     score_per_km = []
     for path_nodes in corridors:
-        dist, score = corridor_profile(g, node_scores, path_nodes)
+        dist, score = corridor_profile(g, handler, path_nodes)
         total_len = dist[-1]
         if total_len < 200:
             continue

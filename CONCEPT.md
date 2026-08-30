@@ -89,6 +89,7 @@ Strecke:
 | `junction=roundabout` | Tempo raus, meist kein Vollstopp | mittel (z. B. +2) |
 | `highway=give_way`, ungeregelte Kreuzung ohne klare Vorfahrt | potenzielles Abbremsen | mittel-niedrig (z. B. +1) |
 | Kreuzende Straße niedrigerer Klasse ohne Ampel/Schild (faktische Vorfahrt) | quasi risikofrei | sehr gering (z. B. +0.2) |
+| Kreuzende Straße gleicher/höherer Klasse ohne Ampel/Schild ("Rechts vor links") | gesetzliche Pflicht zum Schauen/Bremsen (in D), genauso störend wie Give-way | wie Give-way (z. B. +1.0) |
 
 Score eines Segments = 1 (Basis) + Summe der Beiträge aller (nicht-harten) Kreuzungen entlang des
 Wegs. Jedes %FTP-Band hat einen konfigurierbaren **maximal tolerierten Score** (z. B. VO2max nahe
@@ -235,9 +236,12 @@ geprüft. Ergebnis:
 
 | Zonen-Schwelle | ≥1000 m | ≥2000 m | ≥3000 m | längster Treffer |
 |---|---|---|---|---|
-| VO2max/Sprint (~1) | 989 | 434 | 262 | 54.851 m |
-| SB (~1.5) | 1217 | 482 | 302 | 54.851 m |
-| EB (~3) | 1508 | 572 | 348 | 54.851 m |
+| VO2max/Sprint (~1) | 917 | 421 | 269 | 54.851 m |
+| SB (~1.5) | 999 | 450 | 289 | 54.851 m |
+| EB (~3) | 1198 | 529 | 335 | 54.851 m |
+
+(Werte nach Korrektur der Rechts-vor-links-Erkennung, siehe Fehlerliste unten — ursprünglich
+minimal höher, da unbeschilderte Kreuzungen zunächst zu optimistisch bewertet wurden.)
 
 Selbst bei der strengsten Schwelle (praktisch keine Unterbrechung) existieren im 60-km-Umkreis
 Hunderte geeignete Korridore — die Kernannahme des Projekts ist für diese Region bestätigt.
@@ -248,7 +252,8 @@ vorgegebene Punktreihenfolge (4 Wegpunkte, 33,5 km Gesamtroute). Wichtig: `round
 Contraction-Hierarchies-Vorberechnung (CH) nicht kompatibel — für Phase 1 muss das Profil ohne CH
 (oder mit separatem Nicht-CH-Profil) betrieben werden.
 
-**Zwei Implementierungsfehler während des Spikes gefunden und behoben** (relevant für Phase 1):
+**Drei Implementierungsfehler/-lücken während des Spikes gefunden und behoben** (relevant für
+Phase 1):
 1. Korridor-Extraktion brach ursprünglich an jeder echten Kreuzung ab statt nur an harten
    Ausschluss-Knoten (Ampel/Stopp) — widersprach dem Konzept aus Abschnitt 4.1. Behoben durch
    Fortsetzen durch weiche Kreuzungen mit einer "Geradeaus"-Heuristik (kleinste Winkeländerung)
@@ -256,6 +261,12 @@ Contraction-Hierarchies-Vorberechnung (CH) nicht kompatibel — für Phase 1 mus
 2. Die Sliding-Window-Funktion hatte einen Off-by-one-Fehler: bei groben Kantenlängen (lange
    Landstraßen mit wenigen Stützpunkten) konnte sie ein gültiges Fenster überspringen. Behoben
    durch Lookahead vor dem Verschieben des linken Zeigers.
+3. Unbeschilderte Kreuzungen wurden anfangs alle gleich behandelt (fester Malus), ohne zwischen
+   faktischer Vorfahrt (unsere Straße höherrangig) und Rechts-vor-links (gleich-/höherrangige
+   Kreuzung ohne Beschilderung — in Deutschland gesetzliche Pflicht zum Schauen/Bremsen) zu
+   unterscheiden. Behoben durch Vergleich der Straßenklassen an jeder unbeschilderten Kreuzung
+   (siehe Score-Tabelle in Abschnitt 3.4). Nach der Korrektur sinken die Korridor-Zahlen nur
+   moderat (z. B. VO2max/Sprint ≥1000 m: 989 → 917), die Go-Entscheidung bleibt bestehen.
 
 **Go/No-Go:** **Go.** Ansatz trägt für Phase 1.
 
