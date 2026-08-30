@@ -686,6 +686,19 @@ wie Ahrefs/Semrush, KI-Crawler wie GPTBot/ClaudeBot/CCBot). **Kein Ersatz für e
 Bot-/Rate-Limit-Schutz** (WAF/Cloudflare wären das) - erwischt nur Bots, die sich ehrlich per
 User-Agent identifizieren, hält aber die grosse Mehrheit der bekannten, gutartigen Crawler fern.
 
+## 6.15 Phase 2 — Anzahl Streckenvarianten konfigurierbar (durchgeführt)
+
+Nutzer wollte die feste Anzahl von Routen-Varianten aus 6.9/6.12/6.13 (bisher hart auf 10
+kodiert) selbst einstellen können. `RouteRequest.MaxRouteVariantAttempts` (null = Standardwert
+10) überschreibt die Versuchszahl im Retry-Loop von `RouteConstructionService` - wirkungslos,
+wenn keines der drei Limits (Untergrund/Kreuzungen) gesetzt ist, da dann ohnehin nur ein
+einziger Versuch läuft. Das feste 45s-Zeitbudget aus 6.12 bleibt unabhängig davon als
+Sicherheitsnetz bestehen, auch bei einem hoch gesetzten Wert.
+
+Getestet: neuer Unit-Test (Limit auf 3 gesetzt, bricht nach genau 3 statt der sonst üblichen 10
+Versuchen ab), live gegen echtes GraphHopper verifiziert (Warnung nennt korrekt "3 probierten
+Streckenvarianten" statt der Standard-Formulierung mit 10).
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,

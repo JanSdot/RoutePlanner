@@ -449,6 +449,29 @@ public class RouteConstructionServiceTests
     }
 
     [Fact]
+    public async Task MaxRouteVariantAttempts_OverridesDefaultAttemptCount()
+    {
+        var corridors = new FakeCorridorIndex();
+        // Verletzt das Limit bei jedem Versuch - ohne die Ueberschreibung wuerden 10 Versuche
+        // laufen (siehe UnpavedLimitNeverSatisfied_TriesAllAttempts_UsesBestAttempt_AndWarns).
+        var ghClient = new FakeGraphHopperClient { SurfaceSegmentsBySeed = _ => UnpavedSegmentOfLength(600) };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            MaxTotalUnpavedMeters = 500,
+            MaxRouteVariantAttempts = 3,
+        });
+
+        Assert.Equal([1, 2, 3], ghClient.RoundTripSeeds);
+        Assert.Contains(result.Warnings, w => w.Message.Contains("3 probierten Streckenvarianten"));
+    }
+
+    [Fact]
     public async Task UnpavedSegmentLimitExceeded_StopsAtFirstSuccessfulSeed()
     {
         var corridors = new FakeCorridorIndex();

@@ -29,7 +29,9 @@ public sealed class RouteConstructionService(
     // einmal zu einem kompletten Timeout gefuehrt hat (Render, unrealistisch enge Grenzwerte,
     // siehe CONCEPT.md 6.12): ein einzelner Versuch dauert dort im warmen Zustand ~15s (lokal
     // ~3s) - ohne Zeitbudget wuerden bei unerfuellbaren Limits IMMER alle Versuche durchlaufen,
-    // weit ueber jedes sinnvolle Anfrage-Timeout hinaus.
+    // weit ueber jedes sinnvolle Anfrage-Timeout hinaus. Standardwert, per
+    // RouteRequest.MaxRouteVariantAttempts pro Anfrage ueberschreibbar (siehe CONCEPT.md 6.15) -
+    // das Zeitbudget bleibt davon unabhaengig bestehen, auch bei einem hoch gesetzten Wert.
     private const int MaxSurfaceAvoidanceAttempts = 10;
     private static readonly TimeSpan MaxSurfaceAvoidanceTimeBudget = TimeSpan.FromSeconds(45);
 
@@ -61,6 +63,10 @@ public sealed class RouteConstructionService(
             && request.MaxDisruptiveJunctions is null)
             return await BuildRouteAttemptAsync(request, RoundTripSeedBase, ct);
 
+        // Mindestens 1, sonst wuerde eine versehentliche 0/negative Nutzereingabe die Schleife
+        // nie durchlaufen und bestResult bliebe null.
+        var maxAttempts = Math.Max(1, request.MaxRouteVariantAttempts ?? MaxSurfaceAvoidanceAttempts);
+
         RouteResult? bestResult = null;
         var bestBadness = double.MaxValue;
         var bestUnpavedTotalMeters = 0.0;
@@ -68,7 +74,7 @@ public sealed class RouteConstructionService(
         var attemptsMade = 0;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-        for (var attempt = 0; attempt < MaxSurfaceAvoidanceAttempts; attempt++)
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             attemptsMade++;
             var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, ct);

@@ -24,6 +24,9 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   if (input.maxDisruptiveJunctions != null) {
     data.append("maxDisruptiveJunctions", String(input.maxDisruptiveJunctions));
   }
+  if (input.maxRouteVariantAttempts != null) {
+    data.append("maxRouteVariantAttempts", String(input.maxRouteVariantAttempts));
+  }
   data.append("format", format);
   return data;
 }

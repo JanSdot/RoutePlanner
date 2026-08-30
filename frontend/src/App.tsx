@@ -48,6 +48,7 @@ export default function App() {
   const [maxUnpavedSegmentMeters, setMaxUnpavedSegmentMeters] = useState("");
   const [maxTotalUnpavedMeters, setMaxTotalUnpavedMeters] = useState("");
   const [maxDisruptiveJunctions, setMaxDisruptiveJunctions] = useState("");
+  const [maxRouteVariantAttempts, setMaxRouteVariantAttempts] = useState("");
 
   const [inputMode, setInputMode] = useState<InputMode>("file");
   const [fitFile, setFitFile] = useState<File | null>(null);
@@ -86,6 +87,7 @@ export default function App() {
         maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
         maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
         maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
+        maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
         fitFile: file,
       });
       setRouteResult(result);
@@ -111,6 +113,7 @@ export default function App() {
         maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
         maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
         maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
+        maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
         fitFile: file,
       });
       downloadBlob(blob, "trainingsroute.gpx");
@@ -234,6 +237,16 @@ export default function App() {
                 onChange={(e) => setMaxDisruptiveJunctions(e.target.value)}
                 min={0}
                 placeholder="kein Limit"
+              />
+            </label>
+            <label>
+              Anzahl Streckenvarianten (nur mit Limit oben relevant)
+              <input
+                type="number"
+                value={maxRouteVariantAttempts}
+                onChange={(e) => setMaxRouteVariantAttempts(e.target.value)}
+                min={1}
+                placeholder="Standard: 10"
               />
             </label>
           </fieldset>

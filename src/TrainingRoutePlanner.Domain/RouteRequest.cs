@@ -35,4 +35,12 @@ public sealed class RouteRequest
     /// Begrenzung. Nutzt denselben Retry-Mechanismus wie MaxUnpavedSegmentMeters/
     /// MaxTotalUnpavedMeters (RouteConstructionService) - selbe Garantie-Einschraenkung.</summary>
     public int? MaxDisruptiveJunctions { get; init; }
+
+    /// <summary>Wie viele Routen-Varianten (unterschiedliche round_trip-Seeds) maximal
+    /// durchprobiert werden, wenn MaxUnpavedSegmentMeters/MaxTotalUnpavedMeters/
+    /// MaxDisruptiveJunctions gesetzt sind - null = Standardwert von RouteConstructionService
+    /// (siehe dort). Wirkungslos, wenn keines der drei Limits gesetzt ist (dann laeuft ohnehin
+    /// immer nur ein einziger Versuch). Das feste Zeitbudget in RouteConstructionService bleibt
+    /// unabhaengig davon als Sicherheitsnetz bestehen, siehe CONCEPT.md 6.12.</summary>
+    public int? MaxRouteVariantAttempts { get; init; }
 }

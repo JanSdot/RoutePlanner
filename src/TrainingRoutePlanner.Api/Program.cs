@@ -153,6 +153,11 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         return double.TryParse(form[key], NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : null;
     }
 
+    int? ParseOptionalNullableInt(string key)
+    {
+        return int.TryParse(form[key], NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : null;
+    }
+
     RiderProfile rider;
     GeoPoint start;
     double maxApproachMinutes;
@@ -161,6 +166,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
     double? maxUnpavedSegmentMeters;
     double? maxTotalUnpavedMeters;
     int? maxDisruptiveJunctions;
+    int? maxRouteVariantAttempts;
     try
     {
         rider = new RiderProfile
@@ -177,9 +183,8 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         allowUTurns = !string.Equals(form["allowUTurns"], "false", StringComparison.OrdinalIgnoreCase);
         maxUnpavedSegmentMeters = ParseOptionalNullable("maxUnpavedSegmentMeters");
         maxTotalUnpavedMeters = ParseOptionalNullable("maxTotalUnpavedMeters");
-        maxDisruptiveJunctions = int.TryParse(form["maxDisruptiveJunctions"], NumberStyles.Integer, CultureInfo.InvariantCulture, out var junctions)
-            ? junctions
-            : null;
+        maxDisruptiveJunctions = ParseOptionalNullableInt("maxDisruptiveJunctions");
+        maxRouteVariantAttempts = ParseOptionalNullableInt("maxRouteVariantAttempts");
     }
     catch (ArgumentException ex)
     {
@@ -208,6 +213,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         MaxUnpavedSegmentMeters = maxUnpavedSegmentMeters,
         MaxTotalUnpavedMeters = maxTotalUnpavedMeters,
         MaxDisruptiveJunctions = maxDisruptiveJunctions,
+        MaxRouteVariantAttempts = maxRouteVariantAttempts,
     };
 
     try

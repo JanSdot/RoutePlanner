@@ -47,6 +47,9 @@ export interface RouteFormInput {
   maxUnpavedSegmentMeters?: number | null;
   maxTotalUnpavedMeters?: number | null;
   maxDisruptiveJunctions?: number | null;
+  // Wirkungslos, wenn keines der drei Limits oben gesetzt ist - siehe RouteRequest.
+  // MaxRouteVariantAttempts (Backend).
+  maxRouteVariantAttempts?: number | null;
   fitFile: File;
 }
 
