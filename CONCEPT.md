@@ -483,21 +483,23 @@ siehe Kommentar dort).
 GraphHopper bietet keinen harten "vermeide insgesamt X Meter Untergrund Y"-Constraint (das ist
 eine Pfad-Aggregat-Eigenschaft, keine Kanten-Gewichtung, die ein Routing-Algorithmus direkt
 optimieren kann). Stattdessen: `RouteConstructionService.BuildRouteAsync` probiert bei gesetztem
-Limit bis zu 5 komplette Routen-Varianten durch (`round_trip.seed` 1..5, jeweils inkl. der
-kompletten bestehenden Hoehenprofil-Verfeinerung und Korridor-Splicing-Pipeline aus 6.2), prueft
-jede gegen die Grenzwerte und nimmt die erste passende. Haelt keine der 5 Varianten die Grenzen
-ein, wird die mit dem geringsten unbefestigten Gesamtanteil verwendet, mit transparenter Warnung
-statt einer falschen Erfolgsmeldung - **keine Garantie**, nur ein bestmoeglicher Versuch, analog
-zur bestehenden Korridor-Fallback-Eskalation aus 4.3. Ohne gesetztes Limit genau ein Versuch wie
-vorher, keine zusaetzlichen GraphHopper-Anfragen.
+Limit **immer alle 5** kompletten Routen-Varianten durch (`round_trip.seed` 1..5, jeweils inkl.
+der kompletten bestehenden Hoehenprofil-Verfeinerung und Korridor-Splicing-Pipeline aus 6.2) und
+nimmt die mit dem geringsten unbefestigten Gesamtanteil - bewusst NICHT die erste, die die
+Grenzwerte unterschreitet, sonst bliebe ein spaeterer, deutlich besserer Versuch ungenutzt. Haelt
+selbst der beste Versuch die Grenzen nicht ein, wird er trotzdem verwendet, aber mit
+transparenter Warnung statt einer falschen Erfolgsmeldung - **keine Garantie**, nur ein
+bestmoeglicher Versuch, analog zur bestehenden Korridor-Fallback-Eskalation aus 4.3. Ohne
+gesetztes Limit genau ein Versuch wie vorher, keine zusaetzlichen GraphHopper-Anfragen.
 
 Frontend: zwei neue Zahlenfelder ("kein Limit" als Platzhalter bei leerem Feld = `null`).
 
-Getestet: 4 neue Unit-Tests gegen einen Fake-GraphHopper-Client, dessen zurückgegebene
-Untergrund-Segmente vom angefragten Seed abhängen (kein Limit → ein Versuch; Limit erreicht bei
-Seed 2 → Abbruch nach 2 Versuchen; Limit nie erreicht → bester von 5 Versuchen plus Warnung;
-Segment- und Gesamt-Limit unabhängig voneinander geprüft). Zusätzlich live gegen echtes
-GraphHopper verifiziert: strenges Limit (100 m/50 m) führte zu allen 5 Versuchen und der
+Getestet: 5 Unit-Tests gegen einen Fake-GraphHopper-Client, dessen zurückgegebene
+Untergrund-Segmente vom angefragten Seed abhängen (kein Limit → ein Versuch; ein früher Seed
+erfüllt das Limit bereits, ein späterer ist aber klar besser → alle 5 Versuche laufen trotzdem,
+der bessere wird gewählt, nicht der erste passende; Limit nie erreicht → bester von 5 Versuchen
+plus Warnung; Segment- und Gesamt-Limit unabhängig voneinander geprüft). Zusätzlich live gegen
+echtes GraphHopper verifiziert: strenges Limit (100 m/50 m) führte zu allen 5 Versuchen und der
 korrekten Warnung, großzügiges Limit (3000 m) fand eine passende Variante ohne Warnung.
 
 ## 6.10 Phase 2 — Für Radfahrer gesperrte Straßen ausschließen (durchgeführt)

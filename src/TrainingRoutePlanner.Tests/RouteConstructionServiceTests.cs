@@ -382,14 +382,23 @@ public class RouteConstructionServiceTests
     }
 
     [Fact]
-    public async Task UnpavedTotalExceeded_RetriesWithNewSeed_UntilWithinLimit()
+    public async Task UnpavedTotalWithinLimit_AlwaysTriesAllSeeds_PicksLowestTotal()
     {
         var corridors = new FakeCorridorIndex();
         var ghClient = new FakeGraphHopperClient
         {
-            // Erster Versuch (Seed 1) ueberschreitet das Limit deutlich, zweiter (Seed 2) liegt
-            // klar darunter.
-            SurfaceSegmentsBySeed = seed => seed == 1 ? UnpavedSegmentOfLength(2000) : UnpavedSegmentOfLength(50),
+            // Seed 1 ueberschreitet das Limit deutlich. Seed 2 erfuellt es bereits (400m < 500m
+            // Limit) - waere ein frueherer Code-Stand beim ersten Treffer stehengeblieben, haette
+            // er Seed 4 (100m, klar besser) nie gesehen. Seed 3/5 liegen dazwischen, damit die
+            // Reihenfolge nicht zufaellig mit "kleinster Seed gewinnt" verwechselt werden kann.
+            SurfaceSegmentsBySeed = seed => seed switch
+            {
+                1 => UnpavedSegmentOfLength(2000),
+                2 => UnpavedSegmentOfLength(400),
+                3 => UnpavedSegmentOfLength(250),
+                4 => UnpavedSegmentOfLength(100),
+                _ => UnpavedSegmentOfLength(300),
+            },
         };
         var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
 
@@ -402,8 +411,12 @@ public class RouteConstructionServiceTests
             MaxTotalUnpavedMeters = 500,
         });
 
-        Assert.Equal([1, 2], ghClient.RoundTripSeeds);
+        Assert.Equal([1, 2, 3, 4, 5], ghClient.RoundTripSeeds);
         Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
+        // Seed 4 (100m) ist der beste Versuch, nicht Seed 2 (400m) - der erste, der das Limit
+        // unterschreitet.
+        var expectedLat = 52.50 + 100.0 / 111_200.0;
+        Assert.Equal(expectedLat, result.SurfaceSegments[0].Geometry[1].Lat, precision: 3);
     }
 
     [Fact]
@@ -436,13 +449,14 @@ public class RouteConstructionServiceTests
     }
 
     [Fact]
-    public async Task UnpavedSegmentLimitExceeded_RetriesEvenWhenTotalIsFine()
+    public async Task UnpavedSegmentLimitExceeded_EvenWhenTotalIsFine_PicksLowestTotal()
     {
         var corridors = new FakeCorridorIndex();
         var ghClient = new FakeGraphHopperClient
         {
             // Seed 1: ein einzelner 1000m-Abschnitt (verletzt Segment-Limit trotz niedrigem
-            // Gesamtwert). Seed 2: kurzer 50m-Abschnitt, erfuellt beide Grenzwerte.
+            // Gesamtwert). Alle anderen Seeds: kurzer 50m-Abschnitt, erfuellen beide Grenzwerte -
+            // trotzdem laufen alle 5 Versuche, nicht nur bis zum ersten Treffer bei Seed 2.
             SurfaceSegmentsBySeed = seed => seed == 1 ? UnpavedSegmentOfLength(1000) : UnpavedSegmentOfLength(50),
         };
         var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
@@ -457,7 +471,7 @@ public class RouteConstructionServiceTests
             MaxTotalUnpavedMeters = 5000, // grosszuegig, damit nur das Segment-Limit greift
         });
 
-        Assert.Equal([1, 2], ghClient.RoundTripSeeds);
+        Assert.Equal([1, 2, 3, 4, 5], ghClient.RoundTripSeeds);
         Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
     }
 

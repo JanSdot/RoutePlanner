@@ -43,8 +43,12 @@ public sealed class RouteConstructionService(
         if (request.MaxUnpavedSegmentMeters is null && request.MaxTotalUnpavedMeters is null)
             return await BuildRouteAttemptAsync(request, RoundTripSeedBase, ct);
 
+        // Immer alle Versuche durchrechnen und den mit dem geringsten unbefestigten Anteil
+        // waehlen - nicht einfach den ERSTEN nehmen, der die Grenzwerte unterschreitet, sonst
+        // koennte ein spaeterer Versuch mit deutlich weniger Untergrund-Anteil ungenutzt bleiben.
         RouteResult? bestResult = null;
         var bestUnpavedTotalMeters = double.MaxValue;
+        var bestSatisfiesLimits = false;
 
         for (var attempt = 0; attempt < MaxSurfaceAvoidanceAttempts; attempt++)
         {
@@ -55,13 +59,14 @@ public sealed class RouteConstructionService(
             {
                 bestUnpavedTotalMeters = totalUnpavedMeters;
                 bestResult = result;
+                var withinSegmentLimit = request.MaxUnpavedSegmentMeters is not double segLimit || maxUnpavedSegmentMeters <= segLimit;
+                var withinTotalLimit = request.MaxTotalUnpavedMeters is not double totalLimit || totalUnpavedMeters <= totalLimit;
+                bestSatisfiesLimits = withinSegmentLimit && withinTotalLimit;
             }
-
-            var withinSegmentLimit = request.MaxUnpavedSegmentMeters is not double segLimit || maxUnpavedSegmentMeters <= segLimit;
-            var withinTotalLimit = request.MaxTotalUnpavedMeters is not double totalLimit || totalUnpavedMeters <= totalLimit;
-            if (withinSegmentLimit && withinTotalLimit)
-                return result;
         }
+
+        if (bestSatisfiesLimits)
+            return bestResult!;
 
         var warnings = bestResult!.Warnings.ToList();
         warnings.Add(new RouteWarning
