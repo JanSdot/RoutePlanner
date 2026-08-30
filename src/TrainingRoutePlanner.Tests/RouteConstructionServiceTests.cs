@@ -42,13 +42,13 @@ public class RouteConstructionServiceTests
                 new(start.Lat, start.Lon + 0.05),
                 start,
             };
-            return Task.FromResult(new GraphHopperRoute(distanceMeters, TimeSpan.FromSeconds(distanceMeters / 8.0), geometry));
+            return Task.FromResult(new GraphHopperRoute(distanceMeters, TimeSpan.FromSeconds(distanceMeters / 8.0), geometry, []));
         }
 
         public Task<GraphHopperRoute> RouteThroughWaypointsAsync(IReadOnlyList<GeoPoint> waypoints, CancellationToken ct = default)
         {
             WaypointCalls.Add(waypoints);
-            return Task.FromResult(new GraphHopperRoute(RoundTripDistanceMeters, FinalRouteTime, waypoints));
+            return Task.FromResult(new GraphHopperRoute(RoundTripDistanceMeters, FinalRouteTime, waypoints, []));
         }
     }
 

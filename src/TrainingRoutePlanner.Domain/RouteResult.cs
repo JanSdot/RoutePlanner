@@ -17,6 +17,17 @@ public sealed class RouteSegment
     public required IReadOnlyList<GeoPoint> Geometry { get; init; }
 }
 
+/// <summary>Ein Abschnitt der finalen Route mit einheitlichem Strassenbelag (OSM
+/// <c>surface</c>-Tag via GraphHopper <c>path_details</c>), fuer die Kartenanzeige - siehe
+/// CONCEPT.md Abschnitt 6.8. Unabhaengig von <see cref="RouteSegment"/>: deckt die GESAMTE
+/// Route lueckenlos ab (nicht nur Trainings-Intervalle) und ist ein reines Anzeige-Feature,
+/// kein Eingang in die Korridor-/Streckenbewertung.</summary>
+public sealed class SurfaceSegment
+{
+    public required string Surface { get; init; }
+    public required IReadOnlyList<GeoPoint> Geometry { get; init; }
+}
+
 public sealed class RouteResult
 {
     public required IReadOnlyList<GeoPoint> Geometry { get; init; }
@@ -24,4 +35,5 @@ public sealed class RouteResult
     public required TimeSpan EstimatedTotalTime { get; init; }
     public required IReadOnlyList<RouteWarning> Warnings { get; init; }
     public required IReadOnlyList<RouteSegment> Segments { get; init; }
+    public required IReadOnlyList<SurfaceSegment> SurfaceSegments { get; init; }
 }

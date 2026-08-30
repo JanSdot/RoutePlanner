@@ -14,12 +14,18 @@ export interface RouteSegment {
   geometry: GeoPoint[];
 }
 
+export interface SurfaceSegment {
+  surface: string;
+  geometry: GeoPoint[];
+}
+
 export interface RouteResult {
   geometry: GeoPoint[];
   totalDistanceMeters: number;
   estimatedTotalTime: string; // .NET TimeSpan "c" format: "hh:mm:ss.fffffff"
   warnings: RouteWarning[];
   segments: RouteSegment[];
+  surfaceSegments: SurfaceSegment[];
 }
 
 export type SegmentReusePreference = "PreferReuse" | "PreferVariety";

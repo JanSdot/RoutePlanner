@@ -5,7 +5,11 @@ using TrainingRoutePlanner.Domain;
 
 namespace TrainingRoutePlanner.RouteEngine;
 
-public sealed record GraphHopperRoute(double DistanceMeters, TimeSpan Time, IReadOnlyList<GeoPoint> Geometry);
+public sealed record GraphHopperRoute(
+    double DistanceMeters,
+    TimeSpan Time,
+    IReadOnlyList<GeoPoint> Geometry,
+    IReadOnlyList<SurfaceSegment> SurfaceSegments);
 
 /// <summary>Thin wrapper over the GraphHopper /route endpoint, see CONCEPT.md Abschnitt 4.2.
 /// Requires the GraphHopper profile to run WITHOUT contraction hierarchies - round_trip is
@@ -23,7 +27,7 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
     {
         var url = $"/route?point={Fmt(start)}&profile={profile}&algorithm=round_trip" +
                    $"&round_trip.distance={distanceMeters.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)}" +
-                   $"&round_trip.seed={seed}&points_encoded=false&elevation=true";
+                   $"&round_trip.seed={seed}&points_encoded=false&elevation=true&details=surface";
         return await GetRouteAsync(url, ct);
     }
 
@@ -33,7 +37,7 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
             throw new ArgumentException("At least start and end waypoint required.", nameof(waypoints));
 
         var pointsQuery = string.Join("&", waypoints.Select(p => $"point={Fmt(p)}"));
-        var url = $"/route?{pointsQuery}&profile={profile}&points_encoded=false&elevation=true";
+        var url = $"/route?{pointsQuery}&profile={profile}&points_encoded=false&elevation=true&details=surface";
         return await GetRouteAsync(url, ct);
     }
 
@@ -52,8 +56,35 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
         var geometry = path.Points.Coordinates
             .Select(c => new GeoPoint(c[1], c[0], c.Length > 2 ? c[2] : null))
             .ToList();
+        var surfaceSegments = ParseSurfaceSegments(path.Details, geometry);
 
-        return new GraphHopperRoute(path.Distance, TimeSpan.FromMilliseconds(path.Time), geometry);
+        return new GraphHopperRoute(path.Distance, TimeSpan.FromMilliseconds(path.Time), geometry, surfaceSegments);
+    }
+
+    // GraphHopper liefert die per "details=surface" angeforderten Path Details als
+    // [vonIndex, bisIndex, wert]-Tripel, die Indizes in path.Points.Coordinates. Fehlt der
+    // "surface"-Key ganz (z.B. Encoded-Value nicht in der GraphHopper-Config aktiv), gibt es
+    // einfach keine Segmente statt eines Fehlers - das Feature ist rein additiv fuer die
+    // Kartenanzeige.
+    private static List<SurfaceSegment> ParseSurfaceSegments(
+        Dictionary<string, List<JsonElement>>? details, IReadOnlyList<GeoPoint> geometry)
+    {
+        var result = new List<SurfaceSegment>();
+        if (details is null || !details.TryGetValue("surface", out var ranges))
+            return result;
+
+        foreach (var range in ranges)
+        {
+            var fromIndex = range[0].GetInt32();
+            var toIndex = range[1].GetInt32();
+            var surface = range[2].GetString() ?? "unknown";
+            result.Add(new SurfaceSegment
+            {
+                Surface = surface,
+                Geometry = geometry.Skip(fromIndex).Take(toIndex - fromIndex + 1).ToList(),
+            });
+        }
+        return result;
     }
 
     private static string Fmt(GeoPoint p) =>
@@ -76,6 +107,7 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
         public double Distance { get; set; }
         public double Time { get; set; }
         public required GhPoints Points { get; set; }
+        public Dictionary<string, List<JsonElement>>? Details { get; set; }
     }
 
     private sealed class GhPoints

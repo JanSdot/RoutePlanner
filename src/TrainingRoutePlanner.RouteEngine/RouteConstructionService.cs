@@ -82,6 +82,7 @@ public sealed class RouteConstructionService(
             EstimatedTotalTime = finalRoute.Time,
             Warnings = warnings,
             Segments = segments,
+            SurfaceSegments = finalRoute.SurfaceSegments,
         };
     }
 

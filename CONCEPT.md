@@ -226,8 +226,6 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 - Windmodellierung (aktuell bewusst ignoriert)
 - Integration von Baustellen (aktuelle Straßensperrungen/-einschränkungen in die Korridor-/
   Routenbewertung einbeziehen, z. B. über OSM `construction`-Tags oder externe Baustellen-Feeds)
-- Anzeige des Straßenbelags auf der Karte (haben wir bereits als Rohdatum, aber noch nicht visuell
-  aufbereitet)
 - Nutzer können Segmente selbst bewerten/sperren (z. B. "diese Straße meiden" dauerhaft im Profil
   hinterlegen, unabhängig vom automatischen Score aus 3.4)
 - Straßenauslastung/Verkehr zur geplanten Trainingsuhrzeit in die Streckenbewertung einbeziehen
@@ -438,6 +436,40 @@ Live-Deploy gefunden (in keinem lokalen Test/Docker-Smoke-Test vorher aufgefalle
 Beide Bugs zeigten sich ausschließlich im echten Produktions-Build unter Render — Lehre für
 künftige Deployments: den tatsächlichen `vite build`-Output lokal (z. B. via `vite preview`)
 in einem echten Browser testen, nicht nur `vite dev` und den API-Container isoliert.
+
+## 6.8 Phase 2 — Straßenbelag farblich markieren (durchgeführt)
+
+Auslöser: Nutzer bemerkte beim Durchsehen berechneter Routen, dass Abschnitte nicht immer
+asphaltiert sind (Beispielroute im Köpenicker Forstgebiet, wo es viele unbefestigte
+Wald-/Wirtschaftswege gibt). GraphHopper hatte `surface` bereits als Encoded Value in der Config
+aktiv (`deploy/graphhopper-config.yml`), wurde aber nie tatsächlich abgefragt — musste also nicht
+in der eigenen OSM-Korridor-Extraktion nachgebaut werden, sondern nur per GraphHopper Path
+Details mitgeholt werden. **Stolperstein dabei:** der Query-Parameter heißt `details=surface`,
+nicht `path_details=surface` (falscher Name wird von GraphHopper still ignoriert, kein Fehler,
+einfach eine leere `details`-Antwort — nur über direktes Nachlesen der GraphHopper-API-Doku
+gefunden). Zusätzlich musste der lokale GraphHopper-Graph-Cache einmalig gelöscht und neu
+importiert werden, da er vor der `surface`-Konfiguration gebaut worden war (Encoded Values werden
+beim Import fest in den Cache geschrieben, eine reine Config-Änderung reicht nicht).
+
+`GraphHopperClient` fragt jetzt `details=surface` auf jeder `/route`-Anfrage mit an und parst die
+`[vonIndex, bisIndex, wert]`-Tripel aus der Antwort zu `SurfaceSegment`-Objekten (Domain-Modell,
+analog zu `RouteSegment`, aber deckt die GESAMTE Route lückenlos ab statt nur die
+Trainings-Intervalle). Frontend zeigt unbefestigte Abschnitte als breiten, halbtransparenten
+roten "Halo" unter der normalen blauen Routenlinie an (`MapView.tsx`, Layer
+`surface-warning-line`, unter `route-line` einsortiert).
+
+**Bewusst eine Denyliste statt einer Erlaubnisliste** für "unbefestigt": OSM-Straßen ohne
+explizites `surface`-Tag liefert GraphHopper als `"missing"` — das betrifft einen großen Teil
+aller ganz normalen Asphaltstraßen (Tag wird oft weggelassen, wenn der Belag durch den
+Straßentyp schon impliziert ist), waehrend `surface=unpaved`/`gravel`/`dirt`/... fast immer
+explizit gesetzt wird, gerade weil es die Ausnahme ist. Eine Erlaubnisliste hätte also
+grossflächig falsch-positiv markiert; verifiziert an echten GraphHopper-Antworten (`missing`
+kam mit Abstand am häufigsten vor).
+
+Getestet: 2 neue Unit-Tests (`GraphHopperClientTests`, gegen einen gefakten `HttpMessageHandler`
+mit kanonischer Path-Details-Antwort) plus vollständiger Live-Test gegen echtes GraphHopper +
+API + Frontend im echten Chrome (60-Minuten-Route, rote Halo-Segmente an echten
+Schotter-/Pflasterabschnitten sichtbar bestätigt).
 
 ## 7. Offene Punkte
 

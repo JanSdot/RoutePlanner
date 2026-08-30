@@ -252,6 +252,7 @@ export default function App() {
           onStartPointChange={setStartPoint}
           routeGeometry={routeResult?.geometry ?? null}
           routeSegments={routeResult?.segments ?? null}
+          surfaceSegments={routeResult?.surfaceSegments ?? null}
         />
       </main>
     </div>

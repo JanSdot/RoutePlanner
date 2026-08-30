@@ -3,7 +3,7 @@ import { Map as MapLibreMap, Marker, LngLatBounds } from "maplibre-gl";
 import type { StyleSpecification, GeoJSONSource, ExpressionSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { FeatureCollection, LineString } from "geojson";
-import type { GeoPoint, RouteSegment } from "../types";
+import type { GeoPoint, RouteSegment, SurfaceSegment } from "../types";
 
 const OSM_RASTER_STYLE: StyleSpecification = {
   version: 8,
@@ -29,6 +29,18 @@ export function colorForSegmentLabel(label: string, allLabels: string[]): string
   return index === -1 ? SEGMENT_FALLBACK_COLOR : SEGMENT_COLOR_PALETTE[index % SEGMENT_COLOR_PALETTE.length];
 }
 
+// GraphHopper/OSM "surface"-Werte, die auf einen fuer Rennrad/Standard-Reifen spuerbar
+// unangenehmen Untergrund hindeuten. Bewusst eine Denyliste statt einer Erlaubnisliste: viele
+// asphaltierte Strassen tragen in OSM gar kein surface-Tag (GraphHopper liefert dann "missing"),
+// waehrend surface=unpaved/gravel/... fast immer explizit gesetzt wird, gerade WEIL es die
+// Ausnahme ist. Eine Erlaubnisliste wuerde also die meisten echten Asphaltstrecken faelschlich
+// markieren.
+const UNPAVED_SURFACES = new Set([
+  "unpaved", "gravel", "fine_gravel", "dirt", "ground", "sand", "mud", "grass", "grass_paver",
+  "pebblestone", "cobblestone", "sett", "unhewn_cobblestone", "compacted", "woodchips", "rock",
+]);
+export const SURFACE_WARNING_COLOR = "#dc2626";
+
 function segmentColorExpression(labels: string[]): ExpressionSpecification | string {
   const uniqueLabels = [...new Set(labels)];
   // MapLibre's "match" requires at least one case/output pair - with zero labels (e.g. before
@@ -43,9 +55,10 @@ interface MapViewProps {
   onStartPointChange: (point: GeoPoint) => void;
   routeGeometry: GeoPoint[] | null;
   routeSegments: RouteSegment[] | null;
+  surfaceSegments: SurfaceSegment[] | null;
 }
 
-export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSegments }: MapViewProps) {
+export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSegments, surfaceSegments }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const startMarkerRef = useRef<Marker | null>(null);
@@ -110,6 +123,31 @@ export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSe
     if (!map) return;
 
     const applyRoute = () => {
+      // Untergrund-Warnung (breiter, halbtransparenter roter "Halo") - wird VOR der Basis-Route
+      // angelegt, damit sie in der Layer-Reihenfolge darunter liegt (dünne blaue Linie und die
+      // Intervall-Einfärbung bleiben obenauf sichtbar).
+      const unpavedSegments = (surfaceSegments ?? []).filter((s) => UNPAVED_SURFACES.has(s.surface));
+      const surfaceGeojson: FeatureCollection<LineString> = {
+        type: "FeatureCollection",
+        features: unpavedSegments.map((s) => ({
+          type: "Feature",
+          properties: { surface: s.surface },
+          geometry: { type: "LineString", coordinates: s.geometry.map((p) => [p.lon, p.lat]) },
+        })),
+      };
+      const existingSurfaceSource = map.getSource("surface-warning") as GeoJSONSource | undefined;
+      if (existingSurfaceSource) {
+        existingSurfaceSource.setData(surfaceGeojson);
+      } else {
+        map.addSource("surface-warning", { type: "geojson", data: surfaceGeojson });
+        map.addLayer({
+          id: "surface-warning-line",
+          type: "line",
+          source: "surface-warning",
+          paint: { "line-color": SURFACE_WARNING_COLOR, "line-width": 9, "line-opacity": 0.55 },
+        });
+      }
+
       // Basis-Route (blau, duenn) - immer die volle Strecke, darauf liegen die
       // hervorgehobenen Intervall-Segmente aus dem Trainingsplan.
       const existingRouteSource = map.getSource("route") as GeoJSONSource | undefined;
@@ -178,7 +216,7 @@ export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSe
     } else {
       map.once("load", applyRoute);
     }
-  }, [routeGeometry, routeSegments]);
+  }, [routeGeometry, routeSegments, surfaceSegments]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

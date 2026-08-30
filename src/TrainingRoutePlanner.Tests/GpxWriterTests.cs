@@ -22,6 +22,7 @@ public class GpxWriterTests
             EstimatedTotalTime = TimeSpan.FromMinutes(5),
             Warnings = [],
             Segments = [],
+            SurfaceSegments = [],
         };
 
         var gpx = GpxWriter.ToGpx(result, "Test Route");
@@ -61,6 +62,7 @@ public class GpxWriterTests
                     Geometry = [new GeoPoint(52.55, 13.45), new GeoPoint(52.56, 13.46)],
                 },
             ],
+            SurfaceSegments = [],
         };
 
         var gpx = GpxWriter.ToGpx(result);
