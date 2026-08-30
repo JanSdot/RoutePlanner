@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="TrainingRoutePlanner.Api/TrainingRoutePlanner.Api.csproj" />
+  <Project Path="TrainingRoutePlanner.Data/TrainingRoutePlanner.Data.csproj" />
   <Project Path="TrainingRoutePlanner.Domain/TrainingRoutePlanner.Domain.csproj" />
   <Project Path="TrainingRoutePlanner.FitParsing/TrainingRoutePlanner.FitParsing.csproj" />
   <Project Path="TrainingRoutePlanner.OsmCorridors/TrainingRoutePlanner.OsmCorridors.csproj" />

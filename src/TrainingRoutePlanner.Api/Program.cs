@@ -1,11 +1,32 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
+using TrainingRoutePlanner.Data;
 using TrainingRoutePlanner.Domain;
 using TrainingRoutePlanner.FitParsing;
 using TrainingRoutePlanner.OsmCorridors;
 using TrainingRoutePlanner.PowerModel;
 using TrainingRoutePlanner.RouteEngine;
+
+// Lokal liefert `neon link`/`neon env pull` die DB-Verbindung in eine .env.local am Repo-Root
+// (siehe .neon-Skill-Setup) - .NET liest .env-Dateien nicht selbst, Render setzt DATABASE_URL
+// in Produktion dagegen direkt als echte Prozess-Umgebungsvariable (kein .env-Datei-Handling
+// noetig, dort existiert auch gar keine .env.local - sie ist gitignored). Sucht von der
+// Build-Output-Directory nach oben statt eine feste Verzeichnistiefe anzunehmen, damit es
+// unabhaengig von Debug/Release- oder RID-spezifischem Output-Pfad funktioniert.
+var searchDir = new DirectoryInfo(AppContext.BaseDirectory);
+for (var i = 0; i < 10 && searchDir is not null; i++, searchDir = searchDir.Parent)
+{
+    var candidate = Path.Combine(searchDir.FullName, ".env.local");
+    if (File.Exists(candidate))
+    {
+        DotNetEnv.Env.Load(candidate);
+        break;
+    }
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -64,7 +85,47 @@ builder.Services.AddSingleton<PowerSpeedModel>();
 builder.Services.AddSingleton<FitWorkoutParser>();
 builder.Services.AddScoped<RouteConstructionService>();
 
+// Neon liefert DATABASE_URL im Standard-Postgres-URI-Format (postgresql://user:pass@host/db?
+// sslmode=require&...), Npgsql erwartet aber sein eigenes keyword=value-Format - daher die
+// Umwandlung via NpgsqlConnectionStringBuilder statt Npgsql's URI-String direkt zu uebergeben.
+var databaseUrl = Environment.GetEnvironmentVariable("DATABASE_URL")
+    ?? throw new InvalidOperationException("Umgebungsvariable DATABASE_URL fehlt (Neon-Connection-String).");
+builder.Services.AddDbContext<WattLoopDbContext>(options =>
+    options.UseNpgsql(ToNpgsqlConnectionString(databaseUrl)));
+
+builder.Services.AddIdentityCore<IdentityUser>()
+    .AddEntityFrameworkStores<WattLoopDbContext>();
+
 var app = builder.Build();
+
+// Neon-URI (postgresql://user:pass@host/db?sslmode=require&channel_binding=require) in Npgsql's
+// eigenes Verbindungsstring-Format uebersetzt - ueber den staerker typisierten
+// NpgsqlConnectionStringBuilder statt String-Konkatenation, damit z.B. Sonderzeichen im
+// Passwort (URL-kodiert in der Neon-URI) korrekt behandelt werden.
+static string ToNpgsqlConnectionString(string postgresUrl)
+{
+    var uri = new Uri(postgresUrl);
+    var userInfo = uri.UserInfo.Split(':', 2);
+    var queryParams = uri.Query.TrimStart('?')
+        .Split('&', StringSplitOptions.RemoveEmptyEntries)
+        .Select(p => p.Split('=', 2))
+        .ToDictionary(p => Uri.UnescapeDataString(p[0]), p => Uri.UnescapeDataString(p.Length > 1 ? p[1] : ""), StringComparer.OrdinalIgnoreCase);
+
+    var builder = new NpgsqlConnectionStringBuilder
+    {
+        Host = uri.Host,
+        Port = uri.Port > 0 ? uri.Port : 5432,
+        Database = uri.AbsolutePath.TrimStart('/'),
+        Username = Uri.UnescapeDataString(userInfo[0]),
+        Password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : "",
+    };
+    if (queryParams.TryGetValue("sslmode", out var sslMode))
+        builder.SslMode = Enum.Parse<SslMode>(sslMode, ignoreCase: true);
+    if (queryParams.TryGetValue("channel_binding", out var channelBinding))
+        builder.ChannelBinding = Enum.Parse<ChannelBinding>(channelBinding, ignoreCase: true);
+
+    return builder.ConnectionString;
+}
 
 if (app.Environment.IsDevelopment())
 {

@@ -7,7 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="DotNetEnv" Version="3.2.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
   </ItemGroup>
 
   <ItemGroup>
@@ -16,6 +21,7 @@
     <ProjectReference Include="..\TrainingRoutePlanner.FitParsing\TrainingRoutePlanner.FitParsing.csproj" />
     <ProjectReference Include="..\TrainingRoutePlanner.PowerModel\TrainingRoutePlanner.PowerModel.csproj" />
     <ProjectReference Include="..\TrainingRoutePlanner.Domain\TrainingRoutePlanner.Domain.csproj" />
+    <ProjectReference Include="..\TrainingRoutePlanner.Data\TrainingRoutePlanner.Data.csproj" />
   </ItemGroup>
 
 </Project>

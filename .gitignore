@@ -20,3 +20,5 @@ phase0-spike/graphhopper/graph-cache/
 phase0-spike/graphhopper/elevation-cache/
 phase0-spike/graphhopper/graphhopper.log
 .claude/
+.neon
+.env.local
