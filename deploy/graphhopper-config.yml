@@ -16,6 +16,13 @@ graphhopper:
         priority:
           - if: "road_class == MOTORWAY"
             multiply_by: "0"
+          # highway=track (Feld-/Waldwege) komplett ausschliessen - unsere eigene
+          # Korridor-Extraktion (HighwayTags.RoadHighwayTypes) haelt sie ohnehin nie fuer
+          # geeignet, und sie tragen fast nie ein surface-Tag (die Untergrund-Abwertung unten
+          # greift dann nicht, "missing" wird bewusst nicht als unbefestigt gewertet, siehe
+          # CONCEPT.md Abschnitt 6.16).
+          - if: "road_class == TRACK"
+            multiply_by: "0"
           # OSM bicycle=no/access=no (und motorroad=yes) - ohne diese Regel routet GraphHopper
           # klaglos ueber Strassen, auf denen Radfahren gar nicht erlaubt ist, z.B. Abschnitte
           # der B1 oestlich von Berlin (highway=primary, bicycle=no - road_class allein reicht

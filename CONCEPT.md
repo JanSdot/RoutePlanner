@@ -699,6 +699,32 @@ Getestet: neuer Unit-Test (Limit auf 3 gesetzt, bricht nach genau 3 statt der so
 Versuchen ab), live gegen echtes GraphHopper verifiziert (Warnung nennt korrekt "3 probierten
 Streckenvarianten" statt der Standard-Formulierung mit 10).
 
+## 6.16 Phase 2 — highway=track ausschließen (durchgeführt)
+
+Nutzer fragte konkret nach einer Koordinate (52.58948, 13.71823), an der eine Route lang zu
+führen schien - per Overpass-Abfrage geprüft: ein `highway=track` **komplett ohne weitere Tags**
+(kein Name, kein Untergrund, keine Klassifizierung) - praktisch ein unbefestigter Feld-/
+Waldweg. Unsere eigene Korridor-Extraktion (`HighwayTags.RoadHighwayTypes`) schließt `track`
+schon seit Phase 0/1 aus, das GraphHopper-Profil selbst aber nicht - und da `track`-Wege fast
+nie ein `surface`-Tag tragen, greift auch die Untergrund-Abwertung aus 6.12 nicht ("missing"
+wird dort bewusst nicht als unbefestigt gewertet, siehe SurfaceClassifier - das gilt fuer echte
+Strassen, aber nicht fuer track).
+
+Nutzer entschied sich für kompletten Ausschluss (`road_class == TRACK, multiply_by: "0"`,
+analog zu MOTORWAY) statt einer Abwertung - konsistent damit, dass unsere eigene Korridor-Logik
+track ohnehin nie für Training vorschlägt.
+
+**Wichtiger operativer Fund dabei:** GraphHopper hasht das `custom_model` gegen den
+Graph-Cache und verweigert den Start bei jeder Änderung ("Profiles do not match") - ein reiner
+Neustart reicht bei `custom_model`-Änderungen NIE, es braucht immer einen kompletten Reimport
+(auch wenn wie hier keine neue Encoded Value hinzukam, nur eine neue Regel mit einer bereits
+aktiven). Betrifft nur lokale Entwicklung - auf Render importiert der Container ohnehin bei
+jedem Deploy frisch (siehe DEPLOY.md).
+
+Verifiziert: direkte Route zwischen den beiden Enden des gemeldeten Track-Wegs nimmt jetzt
+einen ca. 2,3 km-Umweg über `path`/`residential`/`unclassified` statt der direkten ~850 m über
+`track`.
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,

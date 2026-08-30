@@ -16,6 +16,10 @@ graphhopper:
         priority:
           - if: "road_class == MOTORWAY"
             multiply_by: "0"
+          # highway=track (Feld-/Waldwege) komplett ausschliessen - siehe
+          # deploy/graphhopper-config.yml und CONCEPT.md Abschnitt 6.16.
+          - if: "road_class == TRACK"
+            multiply_by: "0"
           # OSM bicycle=no/access=no (und motorroad=yes) - siehe deploy/graphhopper-config.yml
           # und CONCEPT.md Abschnitt 6.10.
           - if: "!bike_access"
