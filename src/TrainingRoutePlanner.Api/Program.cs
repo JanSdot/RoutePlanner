@@ -124,11 +124,18 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         return double.TryParse(form[key], NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : fallback;
     }
 
+    double? ParseOptionalNullable(string key)
+    {
+        return double.TryParse(form[key], NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : null;
+    }
+
     RiderProfile rider;
     GeoPoint start;
     double maxApproachMinutes;
     SegmentReusePreference reuse;
     bool allowUTurns;
+    double? maxUnpavedSegmentMeters;
+    double? maxTotalUnpavedMeters;
     try
     {
         rider = new RiderProfile
@@ -143,6 +150,8 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
             ? SegmentReusePreference.PreferVariety
             : SegmentReusePreference.PreferReuse;
         allowUTurns = !string.Equals(form["allowUTurns"], "false", StringComparison.OrdinalIgnoreCase);
+        maxUnpavedSegmentMeters = ParseOptionalNullable("maxUnpavedSegmentMeters");
+        maxTotalUnpavedMeters = ParseOptionalNullable("maxTotalUnpavedMeters");
     }
     catch (ArgumentException ex)
     {
@@ -168,6 +177,8 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         MaxApproachMinutes = maxApproachMinutes,
         SegmentReuse = reuse,
         AllowUTurns = allowUTurns,
+        MaxUnpavedSegmentMeters = maxUnpavedSegmentMeters,
+        MaxTotalUnpavedMeters = maxTotalUnpavedMeters,
     };
 
     try

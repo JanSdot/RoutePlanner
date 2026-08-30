@@ -12,11 +12,18 @@ public sealed class RouteConstructionService(
     ICorridorIndex corridorIndex,
     PowerSpeedModel powerModel)
 {
-    private const int RoundTripSeed = 1;
+    private const int RoundTripSeedBase = 1;
     private const double InitialSearchRadiusMeters = 800;
     private const int MaxFallbackAttempts = 4;
     private const double SearchRadiusGrowthFactor = 2.0;
     private const double ScoreRelaxationFactor = 1.5;
+
+    // Nur relevant, wenn RouteRequest.MaxUnpavedSegmentMeters/MaxTotalUnpavedMeters gesetzt
+    // sind - jeder Versuch nutzt einen anderen round_trip-Seed und damit eine andere
+    // Streckenfuehrung. Ohne Erfolg wird der Versuch mit der geringsten Gesamtlaenge
+    // unbefestigter Abschnitte zurueckgegeben, mit Warnung statt Garantie (siehe
+    // RouteRequest.MaxUnpavedSegmentMeters).
+    private const int MaxSurfaceAvoidanceAttempts = 5;
 
     // Trennt "ruhige" Bloecke (GA1/GA2, hohe Toleranz) von "Effort"-Bloecken, die einen
     // dedizierten Korridor brauchen (EB/SB/VO2max/Sprint) - siehe ZoneBands in Domain.
@@ -30,10 +37,56 @@ public sealed class RouteConstructionService(
 
     public async Task<RouteResult> BuildRouteAsync(RouteRequest request, CancellationToken ct = default)
     {
+        // Ohne Untergrund-Limits keinen zusaetzlichen Versuch riskieren - das waere reine
+        // Verschwendung von GraphHopper-Anfragen fuer ein Kriterium, das niemand geprueft haben
+        // will.
+        if (request.MaxUnpavedSegmentMeters is null && request.MaxTotalUnpavedMeters is null)
+            return await BuildRouteAttemptAsync(request, RoundTripSeedBase, ct);
+
+        RouteResult? bestResult = null;
+        var bestUnpavedTotalMeters = double.MaxValue;
+
+        for (var attempt = 0; attempt < MaxSurfaceAvoidanceAttempts; attempt++)
+        {
+            var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, ct);
+            var (totalUnpavedMeters, maxUnpavedSegmentMeters) = EvaluateUnpavedSurfaces(result.SurfaceSegments);
+
+            if (totalUnpavedMeters < bestUnpavedTotalMeters)
+            {
+                bestUnpavedTotalMeters = totalUnpavedMeters;
+                bestResult = result;
+            }
+
+            var withinSegmentLimit = request.MaxUnpavedSegmentMeters is not double segLimit || maxUnpavedSegmentMeters <= segLimit;
+            var withinTotalLimit = request.MaxTotalUnpavedMeters is not double totalLimit || totalUnpavedMeters <= totalLimit;
+            if (withinSegmentLimit && withinTotalLimit)
+                return result;
+        }
+
+        var warnings = bestResult!.Warnings.ToList();
+        warnings.Add(new RouteWarning
+        {
+            Message = $"Keine der {MaxSurfaceAvoidanceAttempts} probierten Streckenvarianten hielt die " +
+                      "Untergrund-Grenzwerte ein - die Route mit dem geringsten Anteil unbefestigter " +
+                      $"Abschnitte ({bestUnpavedTotalMeters:F0} m insgesamt) wurde stattdessen verwendet.",
+        });
+        return new RouteResult
+        {
+            Geometry = bestResult.Geometry,
+            TotalDistanceMeters = bestResult.TotalDistanceMeters,
+            EstimatedTotalTime = bestResult.EstimatedTotalTime,
+            Warnings = warnings,
+            Segments = bestResult.Segments,
+            SurfaceSegments = bestResult.SurfaceSegments,
+        };
+    }
+
+    private async Task<RouteResult> BuildRouteAttemptAsync(RouteRequest request, int roundTripSeed, CancellationToken ct)
+    {
         var warnings = new List<RouteWarning>();
         var maxApproachRadiusMeters = ComputeMaxApproachRadiusMeters(request);
 
-        var (roughLoop, stepDistances) = await RefineRoughLoopAsync(request, ct);
+        var (roughLoop, stepDistances) = await RefineRoughLoopAsync(request, roundTripSeed, ct);
         var roughLoopLength = PolylineMath.TotalLengthMeters(roughLoop.Geometry);
         var totalDistance = stepDistances.Sum();
 
@@ -86,19 +139,35 @@ public sealed class RouteConstructionService(
         };
     }
 
+    private static (double TotalUnpavedMeters, double MaxUnpavedSegmentMeters) EvaluateUnpavedSurfaces(
+        IReadOnlyList<SurfaceSegment> surfaceSegments)
+    {
+        var total = 0.0;
+        var maxSegment = 0.0;
+        foreach (var segment in surfaceSegments)
+        {
+            if (!SurfaceClassifier.IsUnpaved(segment.Surface))
+                continue;
+            var length = PolylineMath.TotalLengthMeters(segment.Geometry);
+            total += length;
+            maxSegment = Math.Max(maxSegment, length);
+        }
+        return (total, maxSegment);
+    }
+
     /// <summary>Fragt round_trip an, verfeinert die pro-Schritt-Distanzen anhand des
     /// tatsaechlichen Hoehenprofils der Antwort (statt der reinen Flach-Annahme aus 3.3) und
     /// fragt bei signifikanter Gesamtabweichung erneut an - der "iterative Prozess" aus 3.3.
     /// Die Position jedes Schritts entlang der Schleife wird pro Iteration anhand der
     /// Distanzen der VORHERIGEN Iteration bestimmt (nicht der gerade neu berechneten) - sonst
     /// haengt die Positionsbestimmung von einem Wert ab, den sie selbst gerade erst liefert.</summary>
-    private async Task<(GraphHopperRoute RoughLoop, double[] StepDistances)> RefineRoughLoopAsync(RouteRequest request, CancellationToken ct)
+    private async Task<(GraphHopperRoute RoughLoop, double[] StepDistances)> RefineRoughLoopAsync(RouteRequest request, int roundTripSeed, CancellationToken ct)
     {
         var steps = request.Plan.Steps;
         var stepDistances = steps.Select(s => EstimateDistance(s, request.Rider, gradient: 0.0)).ToArray();
         var totalDistance = stepDistances.Sum();
 
-        var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, RoundTripSeed, ct);
+        var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, ct);
 
         for (var iteration = 0; iteration < MaxDistanceRefinementIterations; iteration++)
         {
@@ -123,7 +192,7 @@ public sealed class RouteConstructionService(
             if (relativeChange < DistanceRefinementToleranceFraction)
                 break;
 
-            roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, RoundTripSeed, ct);
+            roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, ct);
         }
 
         return (roughLoop, stepDistances);

@@ -15,6 +15,12 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   data.append("maxApproachMinutes", String(input.maxApproachMinutes));
   data.append("segmentReuse", input.segmentReuse);
   data.append("allowUTurns", String(input.allowUTurns));
+  if (input.maxUnpavedSegmentMeters != null) {
+    data.append("maxUnpavedSegmentMeters", String(input.maxUnpavedSegmentMeters));
+  }
+  if (input.maxTotalUnpavedMeters != null) {
+    data.append("maxTotalUnpavedMeters", String(input.maxTotalUnpavedMeters));
+  }
   data.append("format", format);
   return data;
 }

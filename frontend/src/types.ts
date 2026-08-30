@@ -43,6 +43,9 @@ export interface RouteFormInput {
   maxApproachMinutes: number;
   segmentReuse: SegmentReusePreference;
   allowUTurns: boolean;
+  // null/undefined = keine Begrenzung, siehe RouteRequest.MaxUnpavedSegmentMeters (Backend).
+  maxUnpavedSegmentMeters?: number | null;
+  maxTotalUnpavedMeters?: number | null;
   fitFile: File;
 }
 

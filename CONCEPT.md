@@ -471,6 +471,35 @@ mit kanonischer Path-Details-Antwort) plus vollständiger Live-Test gegen echtes
 API + Frontend im echten Chrome (60-Minuten-Route, rote Halo-Segmente an echten
 Schotter-/Pflasterabschnitten sichtbar bestätigt).
 
+## 6.9 Phase 2 — Untergrund-Limits statt nur Anzeige (durchgeführt)
+
+Direkter Folgeauftrag zu 6.8: reine Anzeige reicht nicht, unbefestigte Abschnitte sollen aktiv
+vermieden werden. `RouteRequest` bekommt zwei neue optionale Felder (`MaxUnpavedSegmentMeters`,
+`MaxTotalUnpavedMeters`, beide `null` = kein Limit) - Klassifizierung "unbefestigt" ist jetzt in
+`SurfaceClassifier.IsUnpaved` zentralisiert (Domain), von `RouteConstructionService` UND
+`MapView.tsx` genutzt (Frontend-Liste muss bei Aenderungen manuell synchron gehalten werden,
+siehe Kommentar dort).
+
+GraphHopper bietet keinen harten "vermeide insgesamt X Meter Untergrund Y"-Constraint (das ist
+eine Pfad-Aggregat-Eigenschaft, keine Kanten-Gewichtung, die ein Routing-Algorithmus direkt
+optimieren kann). Stattdessen: `RouteConstructionService.BuildRouteAsync` probiert bei gesetztem
+Limit bis zu 5 komplette Routen-Varianten durch (`round_trip.seed` 1..5, jeweils inkl. der
+kompletten bestehenden Hoehenprofil-Verfeinerung und Korridor-Splicing-Pipeline aus 6.2), prueft
+jede gegen die Grenzwerte und nimmt die erste passende. Haelt keine der 5 Varianten die Grenzen
+ein, wird die mit dem geringsten unbefestigten Gesamtanteil verwendet, mit transparenter Warnung
+statt einer falschen Erfolgsmeldung - **keine Garantie**, nur ein bestmoeglicher Versuch, analog
+zur bestehenden Korridor-Fallback-Eskalation aus 4.3. Ohne gesetztes Limit genau ein Versuch wie
+vorher, keine zusaetzlichen GraphHopper-Anfragen.
+
+Frontend: zwei neue Zahlenfelder ("kein Limit" als Platzhalter bei leerem Feld = `null`).
+
+Getestet: 4 neue Unit-Tests gegen einen Fake-GraphHopper-Client, dessen zurückgegebene
+Untergrund-Segmente vom angefragten Seed abhängen (kein Limit → ein Versuch; Limit erreicht bei
+Seed 2 → Abbruch nach 2 Versuchen; Limit nie erreicht → bester von 5 Versuchen plus Warnung;
+Segment- und Gesamt-Limit unabhängig voneinander geprüft). Zusätzlich live gegen echtes
+GraphHopper verifiziert: strenges Limit (100 m/50 m) führte zu allen 5 Versuchen und der
+korrekten Warnung, großzügiges Limit (3000 m) fand eine passende Variante ohne Warnung.
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,

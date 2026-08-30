@@ -17,6 +17,10 @@ function formatDotNetTimeSpan(value: string): string {
   return h > 0 ? `${h} h ${m} min` : `${m} min`;
 }
 
+function parseOptionalMeters(value: string): number | null {
+  return value.trim() === "" ? null : Number(value);
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -39,6 +43,10 @@ export default function App() {
   const [maxApproachMinutes, setMaxApproachMinutes] = useState(30);
   const [segmentReuse, setSegmentReuse] = useState<SegmentReusePreference>("PreferReuse");
   const [allowUTurns, setAllowUTurns] = useState(true);
+  // Leerer String = kein Limit (siehe parseOptionalMeters) - kein sinnvoller Zahlen-Default,
+  // da 0 etwas anderes bedeuten wuerde (gar kein unbefestigter Untergrund erlaubt).
+  const [maxUnpavedSegmentMeters, setMaxUnpavedSegmentMeters] = useState("");
+  const [maxTotalUnpavedMeters, setMaxTotalUnpavedMeters] = useState("");
 
   const [inputMode, setInputMode] = useState<InputMode>("file");
   const [fitFile, setFitFile] = useState<File | null>(null);
@@ -74,6 +82,8 @@ export default function App() {
         maxApproachMinutes,
         segmentReuse,
         allowUTurns,
+        maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
+        maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
         fitFile: file,
       });
       setRouteResult(result);
@@ -96,6 +106,8 @@ export default function App() {
         maxApproachMinutes,
         segmentReuse,
         allowUTurns,
+        maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
+        maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
         fitFile: file,
       });
       downloadBlob(blob, "trainingsroute.gpx");
@@ -190,6 +202,26 @@ export default function App() {
                 onChange={(e) => setAllowUTurns(e.target.checked)}
               />
               Kehrtwenden erlauben
+            </label>
+            <label>
+              Max. Länge je unbefestigtem Abschnitt (m)
+              <input
+                type="number"
+                value={maxUnpavedSegmentMeters}
+                onChange={(e) => setMaxUnpavedSegmentMeters(e.target.value)}
+                min={0}
+                placeholder="kein Limit"
+              />
+            </label>
+            <label>
+              Max. unbefestigte Strecke insgesamt (m)
+              <input
+                type="number"
+                value={maxTotalUnpavedMeters}
+                onChange={(e) => setMaxTotalUnpavedMeters(e.target.value)}
+                min={0}
+                placeholder="kein Limit"
+              />
             </label>
           </fieldset>
 

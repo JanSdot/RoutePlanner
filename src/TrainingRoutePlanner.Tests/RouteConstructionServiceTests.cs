@@ -20,6 +20,7 @@ public class RouteConstructionServiceTests
     {
         public List<IReadOnlyList<GeoPoint>> WaypointCalls { get; } = [];
         public List<double> RoundTripDistanceRequests { get; } = [];
+        public List<int> RoundTripSeeds { get; } = [];
         public double RoundTripDistanceMeters { get; set; } = 20_000;
 
         // Default = 0, damit Tests, die die Anfahrt-Budget-Pruefung nicht betreffen, nicht
@@ -30,9 +31,14 @@ public class RouteConstructionServiceTests
         // simulieren (fuer die Refinement-Tests) - Default: flache Platzhalter-Schleife.
         public Func<double, IReadOnlyList<GeoPoint>>? GeometryFactory { get; set; }
 
+        // Erlaubt Tests, unterschiedliche Untergrund-Ergebnisse je nach round_trip-Seed zu
+        // simulieren (fuer die Untergrund-Vermeidungs-Tests) - Default: kein Untergrund-Anteil.
+        public Func<int, IReadOnlyList<SurfaceSegment>>? SurfaceSegmentsBySeed { get; set; }
+
         public Task<GraphHopperRoute> RoundTripAsync(GeoPoint start, double distanceMeters, int seed, CancellationToken ct = default)
         {
             RoundTripDistanceRequests.Add(distanceMeters);
+            RoundTripSeeds.Add(seed);
 
             var geometry = GeometryFactory?.Invoke(distanceMeters) ?? new List<GeoPoint>
             {
@@ -42,7 +48,8 @@ public class RouteConstructionServiceTests
                 new(start.Lat, start.Lon + 0.05),
                 start,
             };
-            return Task.FromResult(new GraphHopperRoute(distanceMeters, TimeSpan.FromSeconds(distanceMeters / 8.0), geometry, []));
+            var surfaceSegments = SurfaceSegmentsBySeed?.Invoke(seed) ?? [];
+            return Task.FromResult(new GraphHopperRoute(distanceMeters, TimeSpan.FromSeconds(distanceMeters / 8.0), geometry, surfaceSegments));
         }
 
         public Task<GraphHopperRoute> RouteThroughWaypointsAsync(IReadOnlyList<GeoPoint> waypoints, CancellationToken ct = default)
@@ -344,6 +351,114 @@ public class RouteConstructionServiceTests
         var result = await service.BuildRouteAsync(request);
 
         Assert.Contains(result.Warnings, w => w.Message.Contains("Kehrtwende"));
+    }
+
+    // GraphHopper liefert pro round_trip.seed eine andere Streckenfuehrung - die folgenden Tests
+    // nutzen einen reinen GA1-Plan (keine Effort-Schritte -> keine Korridor-/Wegpunkt-Logik
+    // beteiligt), damit ausschliesslich das Untergrund-Vermeidungs-Verhalten selbst geprueft wird.
+    private static IReadOnlyList<SurfaceSegment> UnpavedSegmentOfLength(double approxMeters) =>
+    [
+        new SurfaceSegment
+        {
+            Surface = "gravel",
+            // 1 Grad Breitengrad entspricht ca. 111.2 km - reicht fuer diese Tests, exakte
+            // Genauigkeit ist nicht noetig, nur klare Groessenordnung ober-/unterhalb der
+            // getesteten Grenzwerte.
+            Geometry = [new GeoPoint(52.50, 13.50), new GeoPoint(52.50 + approxMeters / 111_200.0, 13.50)],
+        },
+    ];
+
+    [Fact]
+    public async Task NoUnpavedLimits_MakesOnlyOneRoundTripAttempt()
+    {
+        var corridors = new FakeCorridorIndex();
+        var ghClient = new FakeGraphHopperClient { SurfaceSegmentsBySeed = _ => UnpavedSegmentOfLength(5000) };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        await service.BuildRouteAsync(MakeRequest([step]));
+
+        Assert.Single(ghClient.RoundTripSeeds);
+    }
+
+    [Fact]
+    public async Task UnpavedTotalExceeded_RetriesWithNewSeed_UntilWithinLimit()
+    {
+        var corridors = new FakeCorridorIndex();
+        var ghClient = new FakeGraphHopperClient
+        {
+            // Erster Versuch (Seed 1) ueberschreitet das Limit deutlich, zweiter (Seed 2) liegt
+            // klar darunter.
+            SurfaceSegmentsBySeed = seed => seed == 1 ? UnpavedSegmentOfLength(2000) : UnpavedSegmentOfLength(50),
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            MaxTotalUnpavedMeters = 500,
+        });
+
+        Assert.Equal([1, 2], ghClient.RoundTripSeeds);
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
+    }
+
+    [Fact]
+    public async Task UnpavedLimitNeverSatisfied_UsesBestAttempt_AndWarns()
+    {
+        var corridors = new FakeCorridorIndex();
+        var ghClient = new FakeGraphHopperClient
+        {
+            // Jeder Versuch liegt ueber dem Limit, aber mit fallender Tendenz - der letzte
+            // (Seed 5, 1000m) sollte als "bester" Versuch gewaehlt werden.
+            SurfaceSegmentsBySeed = seed => UnpavedSegmentOfLength(3000 - seed * 400),
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            MaxTotalUnpavedMeters = 500,
+        });
+
+        Assert.Equal([1, 2, 3, 4, 5], ghClient.RoundTripSeeds);
+        Assert.Contains(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
+        // Seed 5 (3000 - 5*400 = 1000m) sollte als bester Versuch gewaehlt worden sein - siehe
+        // UnpavedSegmentOfLength: der Endpunkt-Breitengrad kodiert direkt die Laenge in Metern.
+        var expectedLat = 52.50 + 1000.0 / 111_200.0;
+        Assert.Equal(expectedLat, result.SurfaceSegments[0].Geometry[1].Lat, precision: 3);
+    }
+
+    [Fact]
+    public async Task UnpavedSegmentLimitExceeded_RetriesEvenWhenTotalIsFine()
+    {
+        var corridors = new FakeCorridorIndex();
+        var ghClient = new FakeGraphHopperClient
+        {
+            // Seed 1: ein einzelner 1000m-Abschnitt (verletzt Segment-Limit trotz niedrigem
+            // Gesamtwert). Seed 2: kurzer 50m-Abschnitt, erfuellt beide Grenzwerte.
+            SurfaceSegmentsBySeed = seed => seed == 1 ? UnpavedSegmentOfLength(1000) : UnpavedSegmentOfLength(50),
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            MaxUnpavedSegmentMeters = 300,
+            MaxTotalUnpavedMeters = 5000, // grosszuegig, damit nur das Segment-Limit greift
+        });
+
+        Assert.Equal([1, 2], ghClient.RoundTripSeeds);
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
     }
 
     [Fact]

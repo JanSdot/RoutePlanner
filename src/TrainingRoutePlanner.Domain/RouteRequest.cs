@@ -18,4 +18,15 @@ public sealed class RouteRequest
     /// einer Warnung gekennzeichnet - kann in duennen Strassennetzen nicht immer vollstaendig
     /// vermieden werden.</summary>
     public bool AllowUTurns { get; init; } = true;
+
+    /// <summary>Maximal erlaubte Laenge EINES zusammenhaengenden Abschnitts mit unbefestigtem
+    /// Untergrund (siehe SurfaceClassifier.IsUnpaved), null = keine Begrenzung. Der Algorithmus
+    /// probiert bei Ueberschreitung mehrere Routen-Varianten durch (RouteConstructionService),
+    /// kann eine Einhaltung aber nicht garantieren - siehe RouteResult.Warnings, wenn selbst der
+    /// beste gefundene Versuch die Grenze noch reisst.</summary>
+    public double? MaxUnpavedSegmentMeters { get; init; }
+
+    /// <summary>Maximal erlaubte Gesamtlaenge unbefestigter Abschnitte ueber die gesamte Route
+    /// summiert, null = keine Begrenzung. Siehe MaxUnpavedSegmentMeters.</summary>
+    public double? MaxTotalUnpavedMeters { get; init; }
 }
