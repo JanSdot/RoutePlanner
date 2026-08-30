@@ -71,6 +71,18 @@ public class RouteConstructionServiceTests
         }
     }
 
+    private sealed class FakeWindForecastClient : IWindForecastClient
+    {
+        public List<(GeoPoint Location, DateTimeOffset AtTime)> Calls { get; } = [];
+        public WindConditions? Response { get; set; }
+
+        public Task<WindConditions?> GetForecastAsync(GeoPoint location, DateTimeOffset atTime, CancellationToken ct = default)
+        {
+            Calls.Add((location, atTime));
+            return Task.FromResult(Response);
+        }
+    }
+
     private sealed class FakeCorridorIndex : ICorridorIndex
     {
         public List<(GeoPoint Near, double MinLength, double MaxScore, double Radius)> Calls { get; } = [];
@@ -114,7 +126,7 @@ public class RouteConstructionServiceTests
     public async Task QuietStep_IsSkipped_NoCorridorLookup()
     {
         var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
         await service.BuildRouteAsync(MakeRequest([step]));
@@ -127,7 +139,7 @@ public class RouteConstructionServiceTests
     {
         var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
         var powerModel = new PowerSpeedModel();
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, powerModel);
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, powerModel, new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.VO2max, TimeSpan.FromMinutes(5), Rider);
         var expectedLength = powerModel.SolveSpeedMps(step.TargetPowerWatts, Rider) * step.Duration.TotalSeconds;
@@ -150,7 +162,7 @@ public class RouteConstructionServiceTests
             attempt++;
             return attempt >= 3 ? MakeCorridor() : null; // erst beim 3. (gelockerten) Versuch ein Treffer
         };
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
         var result = await service.BuildRouteAsync(MakeRequest([step]));
@@ -166,7 +178,7 @@ public class RouteConstructionServiceTests
     {
         var corridors = new FakeCorridorIndex();
         corridors.Responder = call => call.MaxScore >= 100 ? MakeCorridor(length: 300, score: 8.0) : null;
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.VO2max, TimeSpan.FromMinutes(5), Rider);
         var result = await service.BuildRouteAsync(MakeRequest([step]));
@@ -178,7 +190,7 @@ public class RouteConstructionServiceTests
     public async Task NothingFoundAtAll_StepSkipped_ClearWarning()
     {
         var corridors = new FakeCorridorIndex { Responder = _ => null };
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.VO2max, TimeSpan.FromMinutes(5), Rider);
         var result = await service.BuildRouteAsync(MakeRequest([step]));
@@ -190,7 +202,7 @@ public class RouteConstructionServiceTests
     public async Task SegmentReuse_PreferReuse_QueriesCorridorIndexOnlyOnce()
     {
         var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step1 = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
         var step2 = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
@@ -205,7 +217,7 @@ public class RouteConstructionServiceTests
     public async Task SegmentReuse_PreferVariety_QueriesCorridorIndexForEachStep()
     {
         var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step1 = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
         var step2 = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
@@ -221,7 +233,7 @@ public class RouteConstructionServiceTests
     {
         var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
         var ghClient = new FakeGraphHopperClient { FinalRouteTime = TimeSpan.FromMinutes(90) };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         // Effort-Schritt noetig, damit RouteThroughWaypointsAsync (und damit FinalRouteTime)
         // ueberhaupt greift - ein reiner GA1-Plan wuerde nie ueber den Wegpunkt-Pfad laufen.
@@ -252,7 +264,7 @@ public class RouteConstructionServiceTests
             },
         };
         var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
         await service.BuildRouteAsync(MakeRequest([step]));
@@ -268,7 +280,7 @@ public class RouteConstructionServiceTests
     {
         var corridors = new FakeCorridorIndex { Responder = _ => null };
         var powerModel = new PowerSpeedModel();
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, powerModel);
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, powerModel, new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
         var request = new RouteRequest
@@ -295,7 +307,7 @@ public class RouteConstructionServiceTests
     {
         var corridor = MakeCorridor();
         var corridors = new FakeCorridorIndex { Responder = _ => corridor };
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var quietStep = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(20), Rider);
         var workStep = ZoneResolver.FromFtpPercent(115, TimeSpan.FromMinutes(3), Rider, label: "Work");
@@ -310,7 +322,7 @@ public class RouteConstructionServiceTests
     public async Task QuietOnlyPlan_HasNoSegments()
     {
         var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
         var result = await service.BuildRouteAsync(MakeRequest([step]));
@@ -322,7 +334,7 @@ public class RouteConstructionServiceTests
     public async Task AllowUTurnsFalse_DisablesExactReuse_ForRepeatedSteps()
     {
         var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
-        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step1 = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
         var step2 = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
@@ -358,7 +370,7 @@ public class RouteConstructionServiceTests
                 new GeoPoint(52.50, 13.50),
             ],
         };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
         var request = new RouteRequest
@@ -405,7 +417,7 @@ public class RouteConstructionServiceTests
     {
         var corridors = new FakeCorridorIndex();
         var ghClient = new FakeGraphHopperClient { SurfaceSegmentsBySeed = _ => UnpavedSegmentOfLength(5000) };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
         await service.BuildRouteAsync(MakeRequest([step]));
@@ -430,7 +442,7 @@ public class RouteConstructionServiceTests
                 _ => UnpavedSegmentOfLength(100),
             },
         };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
         var result = await service.BuildRouteAsync(new RouteRequest
@@ -456,7 +468,7 @@ public class RouteConstructionServiceTests
         // einem Gleichstand bleibt der ERSTE gefundene Versuch der "beste" (striktes "<", keine
         // spaetere Ueberschreibung bei Gleichstand).
         var ghClient = new FakeGraphHopperClient { SurfaceSegmentsBySeed = _ => UnpavedSegmentOfLength(600) };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
         var result = await service.BuildRouteAsync(new RouteRequest
@@ -480,7 +492,7 @@ public class RouteConstructionServiceTests
         // Verletzt das Limit bei jedem Versuch - ohne die Ueberschreibung wuerden 10 Versuche
         // laufen (siehe UnpavedLimitNeverSatisfied_TriesAllAttempts_UsesBestAttempt_AndWarns).
         var ghClient = new FakeGraphHopperClient { SurfaceSegmentsBySeed = _ => UnpavedSegmentOfLength(600) };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
         var result = await service.BuildRouteAsync(new RouteRequest
@@ -506,7 +518,7 @@ public class RouteConstructionServiceTests
             // Gesamtwert). Seed 2: kurzer 50m-Abschnitt, erfuellt beide Grenzwerte -> Abbruch dort.
             SurfaceSegmentsBySeed = seed => seed == 1 ? UnpavedSegmentOfLength(1000) : UnpavedSegmentOfLength(50),
         };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
         var result = await service.BuildRouteAsync(new RouteRequest
@@ -543,7 +555,7 @@ public class RouteConstructionServiceTests
                 return [new GeoPoint(lat, Start.Lon), new GeoPoint(lat, Start.Lon + 0.01)];
             },
         };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
         var result = await service.BuildRouteAsync(new RouteRequest
@@ -568,7 +580,7 @@ public class RouteConstructionServiceTests
         {
             SmoothnessSegmentsBySeed = seed => seed == 1 ? BadSmoothnessSegmentOfLength(2000) : BadSmoothnessSegmentOfLength(100),
         };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
         var result = await service.BuildRouteAsync(new RouteRequest
@@ -588,7 +600,7 @@ public class RouteConstructionServiceTests
     {
         var corridors = new FakeCorridorIndex();
         var ghClient = new FakeGraphHopperClient();
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var requiredPoint = new GeoPoint(52.5426187 + 0.02, 13.4763778 + 0.02);
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
@@ -624,7 +636,7 @@ public class RouteConstructionServiceTests
                 Start,
             ],
         };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         // Liegt bei ca. 70% der Schleife (auf dem dritten Segment). Der einzige Trainingsschritt
         // ist ein Effort-Schritt und wird daher deterministisch bei Fraktion 0 (Schleifenanfang)
@@ -665,7 +677,7 @@ public class RouteConstructionServiceTests
                 new GeoPoint(52.50, 13.50),
             ],
         };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
         var result = await service.BuildRouteAsync(new RouteRequest
@@ -677,5 +689,65 @@ public class RouteConstructionServiceTests
         });
 
         Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Kehrtwende"));
+    }
+
+    [Fact]
+    public async Task NoPlannedStartTime_NeverCallsWindForecastClient()
+    {
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        var windClient = new FakeWindForecastClient { Response = new WindConditions(5.0, 90.0) };
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), windClient);
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(MakeRequest([step]));
+
+        Assert.Empty(windClient.Calls);
+        Assert.Null(result.Wind);
+    }
+
+    [Fact]
+    public async Task PlannedStartTime_FetchesWindOnceAndSurfacesItInTheResult()
+    {
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        var wind = new WindConditions(6.5, 180.0);
+        var windClient = new FakeWindForecastClient { Response = wind };
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), windClient);
+        var plannedStartTime = new DateTimeOffset(2026, 6, 1, 8, 0, 0, TimeSpan.Zero);
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            PlannedStartTime = plannedStartTime,
+        });
+
+        // Nur EIN Abruf trotz mehrerer Hoehenprofil-Verfeinerungs-Iterationen (RefineRoughLoopAsync)
+        // - Ort/Zeitpunkt aendern sich zwischen Iterationen nie, siehe BuildRouteAsync-Kommentar.
+        var call = Assert.Single(windClient.Calls);
+        Assert.Equal(Start, call.Location);
+        Assert.Equal(plannedStartTime, call.AtTime);
+        Assert.Equal(wind, result.Wind);
+    }
+
+    [Fact]
+    public async Task PlannedStartTime_WindForecastUnavailable_FallsBackToNoWind()
+    {
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        var windClient = new FakeWindForecastClient { Response = null };
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel(), windClient);
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            PlannedStartTime = DateTimeOffset.UtcNow,
+        });
+
+        Assert.Single(windClient.Calls);
+        Assert.Null(result.Wind);
     }
 }

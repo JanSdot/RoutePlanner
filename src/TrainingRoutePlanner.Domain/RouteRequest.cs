@@ -55,4 +55,10 @@ public sealed class RouteRequest
     /// entlang der groben Rundtour-Form einsortiert - die Eingabe-Reihenfolge spielt keine Rolle.
     /// Leer = keine Pflicht-Wegpunkte.</summary>
     public IReadOnlyList<GeoPoint> RequiredPoints { get; init; } = [];
+
+    /// <summary>Geplanter Zeitpunkt der Fahrt, fuer eine windbewusste Zeitschaetzung (siehe
+    /// CONCEPT.md Phase-4-Backlog "Windmodellierung") - null = keine Windvorhersage abgerufen,
+    /// Zeitschaetzung verhaelt sich wie zuvor (windlos). Beeinflusst NUR die Zeitschaetzung,
+    /// nicht die Streckenfuehrung selbst (bewusster Scope, siehe CONCEPT.md).</summary>
+    public DateTimeOffset? PlannedStartTime { get; init; }
 }

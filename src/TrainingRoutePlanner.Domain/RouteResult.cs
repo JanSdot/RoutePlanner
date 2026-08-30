@@ -43,4 +43,10 @@ public sealed class RouteResult
     /// siehe SurfaceClassifier.IsBadSmoothness und CONCEPT.md 6.19. Nicht fuer die Kartenanzeige
     /// gedacht (kein Frontend-Feature dafuer), nur Eingang in die Untergrund-Vermeidung.</summary>
     public required IReadOnlyList<SurfaceSegment> SmoothnessSegments { get; init; }
+
+    /// <summary>Die fuer die Zeitschaetzung tatsaechlich verwendeten Windbedingungen, falls
+    /// RouteRequest.PlannedStartTime gesetzt UND eine Vorhersage verfuegbar war - sonst null
+    /// (siehe CONCEPT.md Phase-4-Backlog "Windmodellierung"). Rein informativ fuer die
+    /// Anzeige, macht die Basis der Zeitschaetzung fuer den Nutzer nachvollziehbar.</summary>
+    public WindConditions? Wind { get; init; }
 }

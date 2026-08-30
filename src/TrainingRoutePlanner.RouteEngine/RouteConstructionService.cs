@@ -10,8 +10,13 @@ namespace TrainingRoutePlanner.RouteEngine;
 public sealed class RouteConstructionService(
     IGraphHopperClient graphHopper,
     ICorridorIndex corridorIndex,
-    PowerSpeedModel powerModel)
+    PowerSpeedModel powerModel,
+    IWindForecastClient windForecastClient)
 {
+    // Fenstergroesse fuer die Peilungs-Stichprobe pro Trainingsschritt (AverageBearingDegrees) -
+    // groesser als bei der Steigung (GradientSampleWindowMeters), da Fahrtrichtung sich ueber
+    // kuerzere Distanzen staerker verrauscht (einzelne Kurven) als das Hoehenprofil.
+    private const double BearingSampleWindowMeters = 800;
     private const int RoundTripSeedBase = 1;
     private const double InitialSearchRadiusMeters = 800;
     private const int MaxFallbackAttempts = 4;
@@ -57,11 +62,20 @@ public sealed class RouteConstructionService(
 
     public async Task<RouteResult> BuildRouteAsync(RouteRequest request, CancellationToken ct = default)
     {
+        // Einmalig fuer die gesamte Anfrage abgerufen statt pro Streckenvarianten-Versuch - Ort
+        // und Zeitpunkt aendern sich zwischen den Versuchen nie, ein wiederholter Abruf waere
+        // reine Verschwendung (siehe CONCEPT.md Phase-4-Backlog "Windmodellierung"). Liefert
+        // null sowohl ohne gesetzten PlannedStartTime als auch bei einem Vorhersage-Fehler -
+        // beides bedeutet schlicht "keine Windkomponente in der Zeitschaetzung", kein Abbruch.
+        var wind = request.PlannedStartTime is DateTimeOffset plannedStartTime
+            ? await windForecastClient.GetForecastAsync(request.StartPoint, plannedStartTime, ct)
+            : null;
+
         // Ohne jedes Limit keinen zusaetzlichen Versuch riskieren - das waere reine
         // Verschwendung von GraphHopper-Anfragen fuer Kriterien, die niemand geprueft haben will.
         if (request.MaxUnpavedSegmentMeters is null && request.MaxTotalUnpavedMeters is null
             && request.MaxDisruptiveJunctions is null)
-            return await BuildRouteAttemptAsync(request, RoundTripSeedBase, ct);
+            return await BuildRouteAttemptAsync(request, RoundTripSeedBase, wind, ct);
 
         // Mindestens 1, sonst wuerde eine versehentliche 0/negative Nutzereingabe die Schleife
         // nie durchlaufen und bestResult bliebe null.
@@ -77,7 +91,7 @@ public sealed class RouteConstructionService(
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             attemptsMade++;
-            var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, ct);
+            var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, wind, ct);
             var (totalUnpavedMeters, maxUnpavedSegmentMeters) =
                 EvaluateUnpavedSurfaces(result.SurfaceSegments, result.SmoothnessSegments);
             var junctionCount = corridorIndex.CountDisruptiveJunctionsNear(result.Geometry, JunctionProximityMeters);
@@ -118,15 +132,16 @@ public sealed class RouteConstructionService(
             Segments = bestResult.Segments,
             SurfaceSegments = bestResult.SurfaceSegments,
             SmoothnessSegments = bestResult.SmoothnessSegments,
+            Wind = bestResult.Wind,
         };
     }
 
-    private async Task<RouteResult> BuildRouteAttemptAsync(RouteRequest request, int roundTripSeed, CancellationToken ct)
+    private async Task<RouteResult> BuildRouteAttemptAsync(RouteRequest request, int roundTripSeed, WindConditions? wind, CancellationToken ct)
     {
         var warnings = new List<RouteWarning>();
         var maxApproachRadiusMeters = ComputeMaxApproachRadiusMeters(request);
 
-        var (roughLoop, stepDistances) = await RefineRoughLoopAsync(request, roundTripSeed, ct);
+        var (roughLoop, stepDistances) = await RefineRoughLoopAsync(request, roundTripSeed, wind, ct);
         var roughLoopLength = PolylineMath.TotalLengthMeters(roughLoop.Geometry);
         var totalDistance = stepDistances.Sum();
 
@@ -191,6 +206,7 @@ public sealed class RouteConstructionService(
             Segments = segments,
             SurfaceSegments = finalRoute.SurfaceSegments,
             SmoothnessSegments = finalRoute.SmoothnessSegments,
+            Wind = wind,
         };
     }
 
@@ -235,10 +251,13 @@ public sealed class RouteConstructionService(
     /// Die Position jedes Schritts entlang der Schleife wird pro Iteration anhand der
     /// Distanzen der VORHERIGEN Iteration bestimmt (nicht der gerade neu berechneten) - sonst
     /// haengt die Positionsbestimmung von einem Wert ab, den sie selbst gerade erst liefert.</summary>
-    private async Task<(GraphHopperRoute RoughLoop, double[] StepDistances)> RefineRoughLoopAsync(RouteRequest request, int roundTripSeed, CancellationToken ct)
+    private async Task<(GraphHopperRoute RoughLoop, double[] StepDistances)> RefineRoughLoopAsync(RouteRequest request, int roundTripSeed, WindConditions? wind, CancellationToken ct)
     {
         var steps = request.Plan.Steps;
-        var stepDistances = steps.Select(s => EstimateDistance(s, request.Rider, gradient: 0.0)).ToArray();
+        // Erste (flache) Schaetzung kennt noch keine Streckengeometrie, kann also weder
+        // Steigung noch Fahrtrichtung/Windkomponente beruecksichtigen - wie gradient=0 wird auch
+        // headwind=0 erst in den folgenden Iterationen anhand der tatsaechlichen Route verfeinert.
+        var stepDistances = steps.Select(s => EstimateDistance(s, request.Rider, gradient: 0.0, headwindMps: 0.0)).ToArray();
         var totalDistance = stepDistances.Sum();
 
         var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, request.BlockedAreas, ct);
@@ -253,7 +272,13 @@ public sealed class RouteConstructionService(
             {
                 var fraction = totalDistance <= 0 ? 0 : cumulative / totalDistance;
                 var gradient = PolylineMath.AverageGradient(roughLoop.Geometry, fraction * roughLoopLength, GradientSampleWindowMeters);
-                refined[i] = EstimateDistance(steps[i], request.Rider, gradient);
+                var headwindMps = 0.0;
+                if (wind is not null)
+                {
+                    var bearing = PolylineMath.AverageBearingDegrees(roughLoop.Geometry, fraction * roughLoopLength, BearingSampleWindowMeters);
+                    headwindMps = ComputeHeadwindComponentMps(bearing, wind);
+                }
+                refined[i] = EstimateDistance(steps[i], request.Rider, gradient, headwindMps);
                 cumulative += stepDistances[i];
             }
 
@@ -272,8 +297,21 @@ public sealed class RouteConstructionService(
         return (roughLoop, stepDistances);
     }
 
-    private double EstimateDistance(TrainingStep step, RiderProfile profile, double gradient) =>
-        powerModel.SolveSpeedMps(step.TargetPowerWatts, profile, gradient) * step.Duration.TotalSeconds;
+    private double EstimateDistance(TrainingStep step, RiderProfile profile, double gradient, double headwindMps) =>
+        powerModel.SolveSpeedMps(step.TargetPowerWatts, profile, gradient, headwindMps) * step.Duration.TotalSeconds;
+
+    /// <summary>Windkomponente entgegen der Fahrtrichtung (positiv=Gegenwind, negativ=
+    /// Rueckenwind) aus Peilung und Windrichtung - siehe PowerSpeedModel.SolveSpeedMps und
+    /// CONCEPT.md Phase-4-Backlog "Windmodellierung". WindFromDirectionDegrees folgt
+    /// meteorologischer Konvention (Richtung, AUS der der Wind weht) - deckt sich die
+    /// Fahrtrichtung mit dieser Richtung (Winkel-Differenz 0), faehrt man direkt in den Wind
+    /// hinein, cos(0)=1 ergibt vollen Gegenwind. Bei 180 Grad Differenz (Fahrtrichtung = wohin
+    /// der Wind weht) ergibt cos(180)=-1 vollen Rueckenwind.</summary>
+    private static double ComputeHeadwindComponentMps(double travelBearingDegrees, WindConditions wind)
+    {
+        var angleDiffRad = (travelBearingDegrees - wind.WindFromDirectionDegrees) * Math.PI / 180.0;
+        return wind.WindSpeedMps * Math.Cos(angleDiffRad);
+    }
 
     /// <summary>Wandelt CONCEPT.md 4.4's Anfahrt-Zeitbudget in einen Distanz-Deckel fuer die
     /// Korridorsuche um, angenommen bei GA1-Tempo (dem ruhigsten Zonentyp - die Anfahrt selbst

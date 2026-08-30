@@ -4,8 +4,9 @@ namespace TrainingRoutePlanner.PowerModel;
 
 /// <summary>
 /// Steady-state Watt-zu-Geschwindigkeit-Modell, siehe CONCEPT.md Abschnitt 3.3.
-/// Keine Beschleunigungs-/Ausrollphasen, kein Wind (siehe 3.3/3.4/Roadmap 6 Phase 4) -
-/// bewusste Vereinfachungen fuer den Prototyp, gelten auch fuer Sprint.
+/// Keine Beschleunigungs-/Ausrollphasen - bewusste Vereinfachung fuer den Prototyp, gilt auch
+/// fuer Sprint. Wind (siehe CONCEPT.md Phase-4-Backlog "Windmodellierung") fliesst ueber den
+/// Luftwiderstands-Term in SolveSpeedMps ein.
 /// </summary>
 public sealed class PowerSpeedModel
 {
@@ -29,8 +30,16 @@ public sealed class PowerSpeedModel
     /// Steigung als Bruchteil (z. B. 0.03 fuer 3%), nicht als Winkel. Wird intern via atan()
     /// in einen Winkel umgerechnet, siehe CONCEPT.md 3.3.
     /// </param>
+    /// <param name="headwindMps">
+    /// Windkomponente entgegen der Fahrtrichtung in m/s (positiv = Gegenwind, negativ =
+    /// Rueckenwind), siehe CONCEPT.md Phase-4-Backlog "Windmodellierung". Der Luftwiderstand
+    /// haengt von der RELATIVEN Windgeschwindigkeit ab (Bodengeschwindigkeit + Windkomponente),
+    /// nicht von der reinen Bodengeschwindigkeit - bei starkem Rueckenwind (|headwindMps| > v)
+    /// kehrt sich die Windkraft sogar zum Vortrieb um, was die vorzeichenerhaltende
+    /// x*|x|-Form (statt x^2) hier korrekt abbildet.
+    /// </param>
     /// <returns>Geschwindigkeit in m/s.</returns>
-    public double SolveSpeedMps(double riderPowerWatts, RiderProfile profile, double gradient = 0.0)
+    public double SolveSpeedMps(double riderPowerWatts, RiderProfile profile, double gradient = 0.0, double headwindMps = 0.0)
     {
         ArgumentNullException.ThrowIfNull(profile);
 
@@ -59,7 +68,12 @@ public sealed class PowerSpeedModel
 
         for (int i = 0; i < MaxIterations; i++)
         {
-            double airPower = 0.5 * AirDensityKgM3 * cdA * v * v * v;
+            // Luftwiderstandskraft ~ v_relativ * |v_relativ| (statt v_relativ^2), damit sich
+            // bei starkem Rueckenwind (v_relativ < 0) das Vorzeichen korrekt umkehrt (siehe
+            // headwindMps-Doku oben). Leistung = Kraft * BODENgeschwindigkeit (die tatsaechlich
+            // zurueckgelegte Strecke pro Zeit haengt von v ab, nicht von v_relativ).
+            double relativeAirspeed = v + headwindMps;
+            double airPower = 0.5 * AirDensityKgM3 * cdA * relativeAirspeed * Math.Abs(relativeAirspeed) * v;
             double rollClimbPower = rollAndClimbCoefficient * v;
             double f = airPower + rollClimbPower - effectivePowerWatts;
 
@@ -68,7 +82,10 @@ public sealed class PowerSpeedModel
                 break;
             }
 
-            double fPrime = 1.5 * AirDensityKgM3 * cdA * v * v + rollAndClimbCoefficient;
+            // d/dv[v_relativ * |v_relativ|] = 2*|v_relativ| (Standard-Identitaet fuer x*|x|),
+            // von dort per Produktregel auf airPower = 0.5*rho*cdA*v*v_relativ*|v_relativ|
+            // uebertragen: d/dv = 0.5*rho*cdA*|v_relativ|*(3v + headwindMps).
+            double fPrime = 0.5 * AirDensityKgM3 * cdA * Math.Abs(relativeAirspeed) * (3 * v + headwindMps) + rollAndClimbCoefficient;
 
             if (fPrime <= 0.0)
             {
@@ -93,10 +110,11 @@ public sealed class PowerSpeedModel
     /// <param name="riderPowerWatts">Vom Fahrer an den Pedalen erzeugte Leistung (Watt).</param>
     /// <param name="profile">Fahrerprofil.</param>
     /// <param name="gradient">Steigung als Bruchteil (z. B. 0.03 fuer 3%).</param>
+    /// <param name="headwindMps">Siehe SolveSpeedMps.</param>
     /// <returns>Benoetigte Zeit als <see cref="TimeSpan"/>.</returns>
-    public TimeSpan TimeForDistance(double distanceMeters, double riderPowerWatts, RiderProfile profile, double gradient = 0.0)
+    public TimeSpan TimeForDistance(double distanceMeters, double riderPowerWatts, RiderProfile profile, double gradient = 0.0, double headwindMps = 0.0)
     {
-        double speedMps = SolveSpeedMps(riderPowerWatts, profile, gradient);
+        double speedMps = SolveSpeedMps(riderPowerWatts, profile, gradient, headwindMps);
 
         if (speedMps <= 0.0)
         {

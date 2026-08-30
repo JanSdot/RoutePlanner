@@ -25,6 +25,15 @@ export interface Junction {
   type: "TrafficSignal" | "Stop";
 }
 
+// Die fuer die Zeitschaetzung tatsaechlich genutzten Windbedingungen - siehe
+// RouteResult.Wind (Backend), null wenn kein plannedStartTime gesetzt war oder keine
+// Vorhersage verfuegbar. WindFromDirectionDegrees folgt meteorologischer Konvention (Richtung,
+// AUS der der Wind weht).
+export interface WindConditions {
+  windSpeedMps: number;
+  windFromDirectionDegrees: number;
+}
+
 export interface RouteResult {
   geometry: GeoPoint[];
   totalDistanceMeters: number;
@@ -32,6 +41,7 @@ export interface RouteResult {
   warnings: RouteWarning[];
   segments: RouteSegment[];
   surfaceSegments: SurfaceSegment[];
+  wind?: WindConditions | null;
 }
 
 export type SegmentReusePreference = "PreferReuse" | "PreferVariety";
@@ -68,6 +78,10 @@ export interface RouteFormInput {
   // Punkte, durch die die Route zwingend fuehren soll - siehe RouteRequest.RequiredPoints
   // (Backend).
   requiredPoints: GeoPoint[];
+  // Wert eines <input type="datetime-local">, in der Browser-Lokalzeit (kein Zeitzonen-Wissen
+  // im String selbst) - wird in api.ts vor dem Versand in UTC umgewandelt, siehe RouteRequest.
+  // PlannedStartTime (Backend). null/leer = keine Windvorhersage.
+  plannedStartTime?: string | null;
   fitFile: File;
 }
 

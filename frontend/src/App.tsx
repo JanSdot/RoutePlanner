@@ -24,6 +24,16 @@ function parseOptionalMeters(value: string): number | null {
   return value.trim() === "" ? null : Number(value);
 }
 
+const COMPASS_DIRECTIONS = ["Nord", "Nordost", "Ost", "Südost", "Süd", "Südwest", "West", "Nordwest"];
+
+// windFromDirectionDegrees folgt meteorologischer Konvention (Richtung, AUS der der Wind
+// weht) - siehe RouteResult.Wind (Backend).
+function formatWind(windSpeedMps: number, windFromDirectionDegrees: number): string {
+  const kmh = Math.round(windSpeedMps * 3.6);
+  const index = Math.round(windFromDirectionDegrees / 45) % 8;
+  return `${kmh} km/h aus ${COMPASS_DIRECTIONS[index]}`;
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -52,6 +62,9 @@ export default function App() {
   const [maxTotalUnpavedMeters, setMaxTotalUnpavedMeters] = useState("");
   const [maxDisruptiveJunctions, setMaxDisruptiveJunctions] = useState("");
   const [maxRouteVariantAttempts, setMaxRouteVariantAttempts] = useState("");
+  // Leer = keine Windvorhersage (siehe RouteFormInput.plannedStartTime) - optional, nicht
+  // erzwungen, da Wind ein rein additives Zeitschaetzungs-Feature ist.
+  const [plannedStartTime, setPlannedStartTime] = useState("");
   const [blockedAreas, setBlockedAreas] = useState<BlockedArea[]>([]);
   const [requiredPoints, setRequiredPoints] = useState<GeoPoint[]>([]);
 
@@ -162,6 +175,7 @@ export default function App() {
         maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
         blockedAreas,
         requiredPoints,
+        plannedStartTime: plannedStartTime || null,
         fitFile: file,
       });
       setRouteResult(result);
@@ -190,6 +204,7 @@ export default function App() {
         maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
         blockedAreas,
         requiredPoints,
+        plannedStartTime: plannedStartTime || null,
         fitFile: file,
       });
       downloadBlob(blob, "trainingsroute.gpx");
@@ -345,6 +360,14 @@ export default function App() {
                 placeholder="Standard: 10"
               />
             </label>
+            <label>
+              Geplanter Fahrzeitpunkt (für Windschätzung)
+              <input
+                type="datetime-local"
+                value={plannedStartTime}
+                onChange={(e) => setPlannedStartTime(e.target.value)}
+              />
+            </label>
           </fieldset>
 
           {requiredPoints.length > 0 && (
@@ -391,6 +414,9 @@ export default function App() {
             <h2>Ergebnis</h2>
             <p>Distanz: {(routeResult.totalDistanceMeters / 1000).toFixed(1)} km</p>
             <p>Geschätzte Zeit: {formatDotNetTimeSpan(routeResult.estimatedTotalTime)}</p>
+            {routeResult.wind && (
+              <p>Wind: {formatWind(routeResult.wind.windSpeedMps, routeResult.wind.windFromDirectionDegrees)}</p>
+            )}
 
             {routeResult.segments.length > 0 && (
               <div className="legend">

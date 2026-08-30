@@ -90,6 +90,48 @@ public class PowerSpeedModelTests
     }
 
     [Fact]
+    public void SolveSpeedMps_Headwind_ReducesSpeed()
+    {
+        var model = new PowerSpeedModel();
+        var profile = CreateProfile();
+        const double power = 220;
+
+        var noWindSpeed = model.SolveSpeedMps(power, profile, gradient: 0.0, headwindMps: 0.0);
+        var headwindSpeed = model.SolveSpeedMps(power, profile, gradient: 0.0, headwindMps: 5.0);
+
+        Assert.True(headwindSpeed < noWindSpeed, "Gegenwind sollte die erreichbare Geschwindigkeit verringern");
+    }
+
+    [Fact]
+    public void SolveSpeedMps_Tailwind_IncreasesSpeed()
+    {
+        var model = new PowerSpeedModel();
+        var profile = CreateProfile();
+        const double power = 220;
+
+        var noWindSpeed = model.SolveSpeedMps(power, profile, gradient: 0.0, headwindMps: 0.0);
+        var tailwindSpeed = model.SolveSpeedMps(power, profile, gradient: 0.0, headwindMps: -5.0);
+
+        Assert.True(tailwindSpeed > noWindSpeed, "Rueckenwind sollte die erreichbare Geschwindigkeit erhoehen");
+    }
+
+    [Fact]
+    public void SolveSpeedMps_StrongTailwindExceedingGroundSpeed_StillConvergesToPositiveSpeed()
+    {
+        // Regressionstest fuer die vorzeichenerhaltende x*|x|-Luftwiderstandsform: bei sehr
+        // starkem Rueckenwind wird die relative Windgeschwindigkeit negativ (Windkraft wirkt als
+        // Vortrieb) - das Verfahren darf dabei nicht divergieren oder eine unrealistisch hohe
+        // Geschwindigkeit liefern, nur ein sehr kleiner Leistungsbedarf fuer eine niedrige
+        // Geschwindigkeit noetig sein.
+        var model = new PowerSpeedModel();
+        var profile = CreateProfile();
+
+        var speed = model.SolveSpeedMps(50, profile, gradient: 0.0, headwindMps: -20.0);
+
+        Assert.True(speed is > 0.0 and < 30.0, $"Erwartete eine endliche, realistische Geschwindigkeit, war aber {speed} m/s");
+    }
+
+    [Fact]
     public void TimeForDistance_LongerDistance_TakesProportionallyLonger()
     {
         var model = new PowerSpeedModel();

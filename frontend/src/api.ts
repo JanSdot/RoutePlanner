@@ -33,6 +33,13 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   if (input.requiredPoints.length > 0) {
     data.append("requiredPoints", JSON.stringify(input.requiredPoints));
   }
+  if (input.plannedStartTime) {
+    // new Date(datetimeLocalString) interpretiert den Wert als Browser-Lokalzeit (JS-Spezifikation
+    // fuer einen ISO-String ohne Zeitzonen-Suffix) - .toISOString() wandelt das dann eindeutig in
+    // UTC um, damit das Backend nicht raten muss, in welcher Zeitzone der Server selbst laeuft
+    // (siehe Program.cs ParseOptionalDateTimeOffset).
+    data.append("plannedStartTime", new Date(input.plannedStartTime).toISOString());
+  }
   data.append("format", format);
   return data;
 }

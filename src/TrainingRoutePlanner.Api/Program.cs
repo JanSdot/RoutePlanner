@@ -76,6 +76,14 @@ builder.Services.AddHttpClient<IGraphHopperClient, GraphHopperClient>((sp, http)
     http.BaseAddress = new Uri(baseUrl);
 });
 
+// Open-Meteo: kostenlose, schluessellose Wetter-API fuer die windbewusste Zeitschaetzung (siehe
+// CONCEPT.md Phase-4-Backlog "Windmodellierung") - kein Konfigurationseintrag noetig, die
+// Basis-URL ist oeffentlich und fest.
+builder.Services.AddHttpClient<IWindForecastClient, OpenMeteoWindForecastClient>(http =>
+{
+    http.BaseAddress = new Uri("https://api.open-meteo.com");
+});
+
 // CorridorIndex.Load ist teuer (PBF-Parse + Korridor-Extraktion) - laeuft einmalig beim
 // Start, siehe CONCEPT.md 4.1 ("einmalig pro Region, cachebar"). Fuer Phase 1 eine feste
 // Region (Sportforum Berlin, 60km) statt Multi-Region-Verwaltung.
@@ -300,6 +308,16 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         return int.TryParse(form[key], NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : null;
     }
 
+    // Erwartet einen ISO-8601-String MIT Zeitzonen-Offset (z.B. "...Z" fuer UTC) - das Frontend
+    // wandelt den lokal im Browser gewaehlten Zeitpunkt (datetime-local-Input, kein eigenes
+    // Zeitzonen-Wissen) selbst in UTC um, bevor er gesendet wird (siehe frontend/src/api.ts).
+    // Ein Parse ohne Offset wuerde sonst stillschweigend die Serverzeitzone annehmen - auf
+    // Render potenziell eine andere als die des Nutzers, ein reales Korrektheitsrisiko.
+    DateTimeOffset? ParseOptionalDateTimeOffset(string key)
+    {
+        return DateTimeOffset.TryParse(form[key], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var value) ? value : null;
+    }
+
     // Als JSON-Array im Formularfeld kodiert (nicht als einzelne Felder wie die uebrigen
     // Parameter), da es beliebig viele Sperrbereiche sein koennen - siehe frontend/src/api.ts.
     // PropertyNameCaseInsensitive noetig, da das Frontend camelCase ("lat"/"radiusMeters")
@@ -352,6 +370,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
     int? maxRouteVariantAttempts;
     List<BlockedArea> blockedAreas;
     List<GeoPoint> requiredPoints;
+    DateTimeOffset? plannedStartTime;
     try
     {
         rider = new RiderProfile
@@ -372,6 +391,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         maxRouteVariantAttempts = ParseOptionalNullableInt("maxRouteVariantAttempts");
         blockedAreas = ParseBlockedAreas();
         requiredPoints = ParseRequiredPoints();
+        plannedStartTime = ParseOptionalDateTimeOffset("plannedStartTime");
     }
     catch (ArgumentException ex)
     {
@@ -403,6 +423,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         MaxRouteVariantAttempts = maxRouteVariantAttempts,
         BlockedAreas = blockedAreas,
         RequiredPoints = requiredPoints,
+        PlannedStartTime = plannedStartTime,
     };
 
     try

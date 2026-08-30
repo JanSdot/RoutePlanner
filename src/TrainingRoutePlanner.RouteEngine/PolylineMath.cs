@@ -81,6 +81,26 @@ internal static class PolylineMath
         return (end.Elevation.Value - start.Elevation.Value) / horizontalDistance;
     }
 
+    /// <summary>Grobe Fahrtrichtung (Peilung in Grad) ueber ein Fenster von windowMeters,
+    /// zentriert auf centerDistanceMeters - fuer die Windkomponenten-Berechnung pro
+    /// Trainingsschritt (siehe CONCEPT.md Phase-4-Backlog "Windmodellierung",
+    /// RouteConstructionService). Wie AverageGradient reicht die Peilung zwischen Fenster-Anfang
+    /// und -Ende (statt einer echten gewichteten Mittelung ueber alle Zwischenpunkte) fuer die
+    /// iterative Verfeinerung voellig aus - kein Kompass-Wraparound-Problem, da BearingDegrees
+    /// bereits einen einzelnen wohldefinierten 0-360-Wert liefert.</summary>
+    public static double AverageBearingDegrees(IReadOnlyList<GeoPoint> geometry, double centerDistanceMeters, double windowMeters)
+    {
+        var totalLength = TotalLengthMeters(geometry);
+        var from = Math.Max(0, centerDistanceMeters - windowMeters / 2);
+        var to = Math.Min(totalLength, centerDistanceMeters + windowMeters / 2);
+        if (to <= from)
+            return 0.0;
+
+        var start = PointAtDistance(geometry, from);
+        var end = PointAtDistance(geometry, to);
+        return BearingDegrees(start, end);
+    }
+
     /// <summary>Projiziert einen Punkt auf die naeheste Stelle der Route und gibt die
     /// kumulierte Distanz vom Routenanfang bis zu dieser Projektion zurueck - genutzt, um
     /// Pflicht-Wegpunkte (RouteRequest.RequiredPoints) in der richtigen Reihenfolge zwischen
