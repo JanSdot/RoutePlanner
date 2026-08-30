@@ -286,18 +286,6 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
   bestaetigt: Registrierung + Auto-Login, Session uebersteht einen Reload, Abmelden, erneutes
   Login mit bestehenden Zugangsdaten, und die Fehleranzeige bei falschem Passwort.
 - A-nach-B-Routing (statt nur Rundkurs)
-- **Windmodellierung** (geplant, noch nicht umgesetzt) - Scope bewusst auf die Zeitschätzung
-  begrenzt, die Streckenführung selbst bleibt unverändert. Datenquelle: Open-Meteo (kostenlos,
-  kein API-Key), ein Abruf pro Routen-Anfrage für Startpunkt + geplanten Fahrzeitpunkt - dafür
-  fehlt aktuell noch ein Eingabefeld "wann geplant". `PowerSpeedModel` müsste den Luftwiderstand
-  über die relative Windgeschwindigkeit (Bodengeschwindigkeit ± Gegen-/Rückenwind-Komponente)
-  statt nur der reinen Bodengeschwindigkeit berechnen. Die Windkomponente pro Trainingsschritt
-  würde über denselben iterativen Verfeinerungs-Mechanismus wie das Höhenprofil (3.3/6.2)
-  bestimmt - ein neuer, kompass-wraparound-sicherer "durchschnittliche Peilung"-Helfer analog zu
-  `PolylineMath.AverageGradient`. Ein einzelner Windwert für die gesamte Fahrt (nicht pro
-  Segment neu abgerufen), bewusst grob wie andere Vereinfachungen im Modell. Ergebnis soll die
-  abgerufenen Windbedingungen (z. B. "Wind: 18 km/h aus West") anzeigen, damit die Zeitschätzung
-  nachvollziehbar bleibt.
 - Grundlegender Umbau: die GESAMTE Rundstrecke (nicht nur Intervall-Segmente wie bisher) aus
   aneinandergereihten, niedrig bewerteten Korridoren verketten statt GraphHoppers round_trip als
   Basis zu nutzen - naeher an der urspruenglichen Konzept-Idee als der leichtgewichtige
@@ -976,6 +964,44 @@ bestätigt: dichtes Ampel-Netz in Berlin sichtbar, Ein-/Ausblenden funktioniert 
 Netzwerk-Request.
 
 Getestet: neuer Unit-Test für `CorridorIndex.GetAllJunctions()`, volle Testsuite (66/66) grün.
+
+## 6.22 Phase 2 — Windmodellierung für die Zeitschätzung (durchgeführt)
+
+Scope bewusst auf die Zeitschätzung begrenzt, die Streckenführung selbst bleibt unverändert -
+siehe Diskussion vor Umsetzung. Neues optionales Eingabefeld "Geplanter Fahrzeitpunkt" (leer =
+keine Windvorhersage, bestehendes Verhalten unverändert).
+
+**Datenquelle:** Open-Meteo (kostenlos, kein API-Key), EIN Abruf pro Routen-Anfrage für
+Startpunkt + geplanten Zeitpunkt (nicht pro Trainingsschritt neu) - liefert `null` statt zu
+werfen, wenn keine Vorhersage verfügbar ist (z. B. Zeitpunkt zu weit in der Vergangenheit),
+Windmodellierung ist rein additiv und darf die Routenberechnung nie verhindern.
+
+**Physik:** `PowerSpeedModel.SolveSpeedMps` berechnet den Luftwiderstand jetzt über die
+RELATIVE Windgeschwindigkeit (Bodengeschwindigkeit + Gegenwind-Komponente) statt der reinen
+Bodengeschwindigkeit, mit vorzeichenerhaltender `v*|v|`-Form statt `v²` - bei sehr starkem
+Rückenwind (Windkomponente betragsmäßig größer als die Bodengeschwindigkeit) kehrt sich die
+Windkraft korrekt zum Vortrieb um, statt fälschlich weiter Widerstand zu erzeugen. Newton-
+Raphson-Ableitung entsprechend angepasst (Identität d/dv[v·|v|] = 2|v|).
+
+**Windkomponente pro Trainingsschritt:** über denselben iterativen Verfeinerungs-Mechanismus
+wie das Höhenprofil (3.3/6.2) bestimmt - neuer `PolylineMath.AverageBearingDegrees`-Helfer
+(Peilung zwischen Fenster-Anfang und -Ende, analog zu `AverageGradient`; kein Kompass-
+Wraparound-Problem, da `BearingDegrees` bereits einen einzelnen wohldefinierten Wert liefert,
+einfacher als ursprünglich vor der Umsetzung angenommen).
+
+**Transparenz:** `RouteResult.Wind` (nullable) trägt die tatsächlich verwendeten
+Windbedingungen, im Ergebnis als z. B. "Wind: 12 km/h aus West" angezeigt.
+
+Getestet: neue Unit-Tests für `PowerSpeedModel` (Gegenwind verringert, Rückenwind erhöht die
+Geschwindigkeit; Regressionstest für die vorzeichenerhaltende Form bei extremem Rückenwind) und
+`RouteConstructionService` (kein Abruf ohne gesetzten Zeitpunkt; genau EIN Abruf trotz mehrerer
+Verfeinerungs-Iterationen; korrekter Fallback bei nicht verfügbarer Vorhersage), volle Testsuite
+(72/72) grün. Live verifiziert: direkter Open-Meteo-Abruf für Berlin bestätigt die erwartete
+Antwortform; ein echter `/route`-Aufruf mit gesetztem Zeitpunkt lieferte einen echten Windwert
+(3,21 m/s aus 266°) und veränderte die berechnete Distanz/Zeit gegenüber demselben Aufruf ohne
+Zeitpunkt; ein Zeitpunkt weit in der Vergangenheit fiel korrekt auf "kein Wind" zurück statt
+zu scheitern; im echten Chrome bestätigt: Datumsfeld → Route berechnen → "Wind: 12 km/h aus
+West" im Ergebnis sichtbar.
 
 ## 7. Offene Punkte
 
