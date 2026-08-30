@@ -229,6 +229,20 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
   aufbereitet)
 - Nutzer können Segmente selbst bewerten/sperren (z. B. "diese Straße meiden" dauerhaft im Profil
   hinterlegen, unabhängig vom automatischen Score aus 3.4)
+- TCX-Export mit typisierten `<CoursePoint>`-Elementen (z. B. "Segment Start"/"Segment End" statt
+  generischer Icons) als kleine Verbesserung zu den bereits vorhandenen benannten GPX-Wegpunkten
+  aus Abschnitt 6.5 — reine Icon-/Kategorisierungs-Verbesserung, kein neues Verhalten
+- **Geprüft und verworfen:** FIT-Workout-Export für Geräte-native Restdistanz-Anzeige pro
+  Intervall. Grund: Ein FIT-Workout-Schritt läuft rein zeit-/distanzbasiert relativ zum Start des
+  Schritts (Timer/Distanzzähler ab Schrittbeginn) — er hat keinerlei GPS-Bezug zur gleichzeitig
+  geladenen Route/den gewählten Korridoren. Er würde nur hoffen, dass der Fahrer nach X Minuten
+  zufällig am richtigen Korridor ist, statt es sicherzustellen. Echte positionsgebundene
+  Live-Restdistanz-Anzeige gibt es auf Garmin/Wahoo nur über deren eigenes "Segment"-Feature
+  (Garmin Connect/Strava) — das wäre eine echte Plattform-API-Integration (Account-Anbindung,
+  Segment dort anlegen/synchronisieren), kein Datei-Export-Thema, und ein deutlich größeres
+  eigenständiges Vorhaben als alles bisher in Phase 2. Die bereits gebauten benannten
+  GPX-Wegpunkte (Abschnitt 6.5) bleiben damit die beste aktuell umsetzbare Lösung, da sie
+  tatsächlich positionsgebunden (GPS-Näherungsalarm) sind, nur ohne mitlaufende Distanzanzeige.
 
 ## 6.1 Phase 0 — Ergebnis (durchgeführt)
 
@@ -362,6 +376,16 @@ des zugehörigen Trainingsschritts (z. B. "Work"). Frontend zeichnet die Gesamtr
 blaue Linie und legt die Segmente in individuellen Farben (feste Palette, pro Label konsistent)
 darüber, mit Legende in der Seitenleiste — Nutzer erkennen so die Intervalle aus dem FIT-File auf
 der Karte wieder.
+
+## 6.5 Phase 2 — Segment-Markierung im GPX-Export (durchgeführt)
+
+`GpxWriter` schreibt jetzt zusätzlich zu den Track-Punkten benannte Wegpunkte (`<wpt>`) am Start
+und Ende jedes `RouteSegment` (z. B. "Start: Work (1)" / "Ende: Work (1)", durchnummeriert bei
+Wiederholung), platziert vor `<trk>` gemäß GPX-1.1-Element-Reihenfolge. Garmin- und
+Wahoo-Geräte zeigen beim Abfahren einer geladenen Kurs-Datei ein Pop-up, sobald ein benannter
+Wegpunkt in der Nähe erreicht wird — das ist tatsächlich positionsgebunden (GPS-Näherungsalarm),
+nur ohne mitlaufende Restdistanz-Anzeige (siehe Abwägung zum FIT-Workout-Export in Abschnitt 6
+Phase 4). Noch nicht am echten Gerät getestet, nur end-to-end gegen die API verifiziert.
 
 ## 7. Offene Punkte
 
