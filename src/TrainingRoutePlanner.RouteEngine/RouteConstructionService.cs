@@ -18,19 +18,30 @@ public sealed class RouteConstructionService(
     private const double SearchRadiusGrowthFactor = 2.0;
     private const double ScoreRelaxationFactor = 1.5;
 
-    // Nur relevant, wenn RouteRequest.MaxUnpavedSegmentMeters/MaxTotalUnpavedMeters gesetzt
-    // sind - jeder Versuch nutzt einen anderen round_trip-Seed und damit eine andere
-    // Streckenfuehrung. Bricht beim ERSTEN Versuch ab, der die Grenzwerte einhaelt (schnell im
-    // Normalfall - das GraphHopper-Profil bewertet unbefestigte Oberflaechen seit 6.12 selbst
-    // ab, ein einzelner Versuch trifft die Grenzwerte daher meistens schon). Ohne Erfolg wird
-    // der Versuch mit der geringsten Gesamtlaenge unbefestigter Abschnitte zurueckgegeben, mit
-    // Warnung statt Garantie. MaxSurfaceAvoidanceTimeBudget ist das Sicherheitsnetz gegen genau
-    // die Situation, die live einmal zu einem kompletten Timeout gefuehrt hat (Render, unrealistisch
-    // enge Grenzwerte, siehe CONCEPT.md 6.12): ein einzelner Versuch dauert dort im warmen
-    // Zustand ~15s (lokal ~3s) - ohne Zeitbudget wuerden bei unerfuellbaren Limits IMMER alle
-    // Versuche durchlaufen, weit ueber jedes sinnvolle Anfrage-Timeout hinaus.
+    // Nur relevant, wenn RouteRequest.MaxUnpavedSegmentMeters/MaxTotalUnpavedMeters/
+    // MaxDisruptiveJunctions gesetzt sind - jeder Versuch nutzt einen anderen round_trip-Seed
+    // und damit eine andere Streckenfuehrung. Bricht beim ERSTEN Versuch ab, der ALLE gesetzten
+    // Grenzwerte einhaelt (schnell im Normalfall - das GraphHopper-Profil bewertet unbefestigte
+    // Oberflaechen seit 6.12 selbst ab, ein einzelner Versuch trifft die Grenzwerte daher
+    // meistens schon). Ohne Erfolg wird der Versuch mit der geringsten "Badness" (siehe
+    // RouteVariantBadness) zurueckgegeben, mit Warnung statt Garantie.
+    // MaxSurfaceAvoidanceTimeBudget ist das Sicherheitsnetz gegen genau die Situation, die live
+    // einmal zu einem kompletten Timeout gefuehrt hat (Render, unrealistisch enge Grenzwerte,
+    // siehe CONCEPT.md 6.12): ein einzelner Versuch dauert dort im warmen Zustand ~15s (lokal
+    // ~3s) - ohne Zeitbudget wuerden bei unerfuellbaren Limits IMMER alle Versuche durchlaufen,
+    // weit ueber jedes sinnvolle Anfrage-Timeout hinaus.
     private const int MaxSurfaceAvoidanceAttempts = 10;
     private static readonly TimeSpan MaxSurfaceAvoidanceTimeBudget = TimeSpan.FromSeconds(45);
+
+    // Ein Punkt der Routengeometrie gilt als "an" einer Ampel/Stopp-Kreuzung, wenn er innerhalb
+    // dieses Radius liegt - siehe CorridorIndex.CountDisruptiveJunctionsNear.
+    private const double JunctionProximityMeters = 25.0;
+
+    // Heuristische Gewichtung fuer den Fallback-Vergleich, WENN kein Versuch alle Grenzwerte
+    // einhaelt: "eine Kreuzung vermeiden ist ungefaehr so viel wert wie 300m unbefestigten
+    // Untergrund vermeiden". Bewusst grob - beeinflusst nur die Auswahl des bestmoeglichen
+    // Kompromisses, nicht ob ein Versuch die tatsaechlichen Nutzer-Grenzwerte erfuellt.
+    private const double JunctionBadnessWeightMeters = 300.0;
 
     // Trennt "ruhige" Bloecke (GA1/GA2, hohe Toleranz) von "Effort"-Bloecken, die einen
     // dedizierten Korridor brauchen (EB/SB/VO2max/Sprint) - siehe ZoneBands in Domain.
@@ -44,14 +55,16 @@ public sealed class RouteConstructionService(
 
     public async Task<RouteResult> BuildRouteAsync(RouteRequest request, CancellationToken ct = default)
     {
-        // Ohne Untergrund-Limits keinen zusaetzlichen Versuch riskieren - das waere reine
-        // Verschwendung von GraphHopper-Anfragen fuer ein Kriterium, das niemand geprueft haben
-        // will.
-        if (request.MaxUnpavedSegmentMeters is null && request.MaxTotalUnpavedMeters is null)
+        // Ohne jedes Limit keinen zusaetzlichen Versuch riskieren - das waere reine
+        // Verschwendung von GraphHopper-Anfragen fuer Kriterien, die niemand geprueft haben will.
+        if (request.MaxUnpavedSegmentMeters is null && request.MaxTotalUnpavedMeters is null
+            && request.MaxDisruptiveJunctions is null)
             return await BuildRouteAttemptAsync(request, RoundTripSeedBase, ct);
 
         RouteResult? bestResult = null;
-        var bestUnpavedTotalMeters = double.MaxValue;
+        var bestBadness = double.MaxValue;
+        var bestUnpavedTotalMeters = 0.0;
+        var bestJunctionCount = 0;
         var attemptsMade = 0;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
@@ -60,16 +73,21 @@ public sealed class RouteConstructionService(
             attemptsMade++;
             var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, ct);
             var (totalUnpavedMeters, maxUnpavedSegmentMeters) = EvaluateUnpavedSurfaces(result.SurfaceSegments);
+            var junctionCount = corridorIndex.CountDisruptiveJunctionsNear(result.Geometry, JunctionProximityMeters);
 
-            if (totalUnpavedMeters < bestUnpavedTotalMeters)
+            var badness = totalUnpavedMeters + junctionCount * JunctionBadnessWeightMeters;
+            if (badness < bestBadness)
             {
-                bestUnpavedTotalMeters = totalUnpavedMeters;
+                bestBadness = badness;
                 bestResult = result;
+                bestUnpavedTotalMeters = totalUnpavedMeters;
+                bestJunctionCount = junctionCount;
             }
 
             var withinSegmentLimit = request.MaxUnpavedSegmentMeters is not double segLimit || maxUnpavedSegmentMeters <= segLimit;
             var withinTotalLimit = request.MaxTotalUnpavedMeters is not double totalLimit || totalUnpavedMeters <= totalLimit;
-            if (withinSegmentLimit && withinTotalLimit)
+            var withinJunctionLimit = request.MaxDisruptiveJunctions is not int juncLimit || junctionCount <= juncLimit;
+            if (withinSegmentLimit && withinTotalLimit && withinJunctionLimit)
                 return result;
 
             if (stopwatch.Elapsed >= MaxSurfaceAvoidanceTimeBudget)
@@ -79,9 +97,10 @@ public sealed class RouteConstructionService(
         var warnings = bestResult!.Warnings.ToList();
         warnings.Add(new RouteWarning
         {
-            Message = $"Keine der {attemptsMade} probierten Streckenvarianten hielt die " +
-                      "Untergrund-Grenzwerte ein - die Route mit dem geringsten Anteil unbefestigter " +
-                      $"Abschnitte ({bestUnpavedTotalMeters:F0} m insgesamt) wurde stattdessen verwendet.",
+            Message = $"Keine der {attemptsMade} probierten Streckenvarianten hielt die gesetzten " +
+                      "Grenzwerte (Untergrund/Kreuzungen) ein - die beste gefundene Variante " +
+                      $"({bestUnpavedTotalMeters:F0} m unbefestigt, {bestJunctionCount} Ampel-/Stopp-Kreuzungen) " +
+                      "wurde stattdessen verwendet.",
         });
         return new RouteResult
         {

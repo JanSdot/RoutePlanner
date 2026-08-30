@@ -29,4 +29,10 @@ public sealed class RouteRequest
     /// <summary>Maximal erlaubte Gesamtlaenge unbefestigter Abschnitte ueber die gesamte Route
     /// summiert, null = keine Begrenzung. Siehe MaxUnpavedSegmentMeters.</summary>
     public double? MaxTotalUnpavedMeters { get; init; }
+
+    /// <summary>Maximal erlaubte Anzahl unterschiedlicher Ampel-/Stopp-Kreuzungen (siehe
+    /// CONCEPT.md 3.4 "harte Unterbrechungen") entlang der GESAMTEN Route, null = keine
+    /// Begrenzung. Nutzt denselben Retry-Mechanismus wie MaxUnpavedSegmentMeters/
+    /// MaxTotalUnpavedMeters (RouteConstructionService) - selbe Garantie-Einschraenkung.</summary>
+    public int? MaxDisruptiveJunctions { get; init; }
 }

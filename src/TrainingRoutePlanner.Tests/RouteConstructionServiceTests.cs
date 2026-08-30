@@ -64,6 +64,13 @@ public class RouteConstructionServiceTests
         public List<(GeoPoint Near, double MinLength, double MaxScore, double Radius)> Calls { get; } = [];
         public Func<(GeoPoint Near, double MinLength, double MaxScore, double Radius), Corridor?>? Responder { get; set; }
 
+        // Erlaubt Tests, die Anzahl gefundener Ampel-/Stopp-Kreuzungen unabhaengig von der
+        // tatsaechlichen Routengeometrie zu simulieren - Default: nie eine Kreuzung.
+        public Func<IReadOnlyList<GeoPoint>, int>? JunctionCountResponder { get; set; }
+
+        public int CountDisruptiveJunctionsNear(IReadOnlyList<GeoPoint> routeGeometry, double proximityMeters) =>
+            JunctionCountResponder?.Invoke(routeGeometry) ?? 0;
+
         public Corridor? TryFindCorridor(GeoPoint near, double minLengthMeters, double maxDisruptionScore, double searchRadiusMeters)
         {
             var call = (near, minLengthMeters, maxDisruptionScore, searchRadiusMeters);
@@ -461,6 +468,42 @@ public class RouteConstructionServiceTests
             Plan = new TrainingPlan { Steps = [step] },
             MaxUnpavedSegmentMeters = 300,
             MaxTotalUnpavedMeters = 5000, // grosszuegig, damit nur das Segment-Limit greift
+        });
+
+        Assert.Equal([1, 2], ghClient.RoundTripSeeds);
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
+    }
+
+    [Fact]
+    public async Task MaxDisruptiveJunctions_RetriesUntilJunctionCountWithinLimit()
+    {
+        var corridors = new FakeCorridorIndex
+        {
+            // Seed 1 (Distanz-Marker in der Fake-Geometrie: RoundTripDistanceRequests[0]) hat 3
+            // Kreuzungen, jeder weitere Versuch nur noch 1 - erfuellt das Limit von 2.
+            JunctionCountResponder = geometry => geometry[0].Lat > 52.5426187 ? 3 : 1,
+        };
+        // GeometryFactory kodiert den Versuch ueber die Lat-Koordinate, damit der
+        // JunctionCountResponder zwischen Seed 1 und den anderen unterscheiden kann.
+        var seedCounter = 0;
+        var ghClient = new FakeGraphHopperClient
+        {
+            GeometryFactory = _ =>
+            {
+                seedCounter++;
+                var lat = seedCounter == 1 ? Start.Lat + 1 : Start.Lat; // Seed 1 klar ueber Start.Lat
+                return [new GeoPoint(lat, Start.Lon), new GeoPoint(lat, Start.Lon + 0.01)];
+            },
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            MaxDisruptiveJunctions = 2,
         });
 
         Assert.Equal([1, 2], ghClient.RoundTripSeeds);

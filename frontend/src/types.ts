@@ -46,6 +46,7 @@ export interface RouteFormInput {
   // null/undefined = keine Begrenzung, siehe RouteRequest.MaxUnpavedSegmentMeters (Backend).
   maxUnpavedSegmentMeters?: number | null;
   maxTotalUnpavedMeters?: number | null;
+  maxDisruptiveJunctions?: number | null;
   fitFile: File;
 }
 

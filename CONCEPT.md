@@ -224,6 +224,17 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 - Nutzer setzt manuell eigene Wegpunkte, um die berechnete Route gezielt anzupassen
   (z. B. einen bestimmten Abschnitt umgehen oder erzwingen)
 - Windmodellierung (aktuell bewusst ignoriert)
+- Grundlegender Umbau: die GESAMTE Rundstrecke (nicht nur Intervall-Segmente wie bisher) aus
+  aneinandergereihten, niedrig bewerteten Korridoren verketten statt GraphHoppers round_trip als
+  Basis zu nutzen - naeher an der urspruenglichen Konzept-Idee als der leichtgewichtige
+  Retry-Ansatz aus 6.13, aber ein deutlich groesserer algorithmischer Umbau mit entsprechendem
+  Risiko (siehe 6.13 fuer die Diskussion, warum zunaechst der kleinere Ansatz gewaehlt wurde)
+- Radweg-/Infrastruktur-Praesenz (`cycleway=*`/`bicycle=use_sidepath`) als Routing-Signal - beim
+  Vergleich Hultschiner Damm vs. Wegendorfer Chaussee aufgefallen (siehe 6.13), vom Nutzer aber
+  fuer TRAINING als nachrangig gegenueber "wenig Unterbrechungen" eingestuft
+- Landstrassen mit niedrigerem Tempolimit bevorzugen, wenn der Untergrund gut ist (weniger/
+  langsamerer Durchgangsverkehr auf ungeschuetzten Strecken) - vom Nutzer vorgeschlagen, noch
+  nicht umgesetzt
 - Integration von Baustellen (aktuelle Straßensperrungen/-einschränkungen in die Korridor-/
   Routenbewertung einbeziehen, z. B. über OSM `construction`-Tags oder externe Baustellen-Feeds)
 - Nutzer können Segmente selbst bewerten/sperren (z. B. "diese Straße meiden" dauerhaft im Profil
@@ -624,6 +635,56 @@ Seeds"), neuer Test für "alle 10 Versuche ausgeschöpft, bester bei Gleichstand
 Zeitbudget-Pfad selbst ist bewusst nicht unit-getestet (bräuchte echte Verzögerungen oder eine
 Testbarkeits-Naht einzig für diesen Zweck) - Vertrauen kommt aus der einfachen, leicht
 nachvollziehbaren `Stopwatch`-Prüfung und der Live-Verifikation gegen Render.
+
+## 6.13 Phase 2 — Ampeln/Kreuzungen für die GESAMTE Route vermeiden (durchgeführt)
+
+Nutzer fragte, ob wir Kreuzungen/Ampeln in die Routenkriterien einbeziehen können. Der
+Unterbrechungs-Score aus 3.4 (Ampeln, Stopp, Kreisverkehr, Rechts-vor-links) existiert bereits
+seit Phase 0/1, wurde aber bisher NUR zur Korridor-Auswahl für Intensitäts-Intervalle genutzt,
+nicht für die restliche/ruhige Strecke oder die Grundform der Runde. GraphHopper selbst bietet
+dafür nichts Fertiges (anders als bei Untergrund/Zugang/Stadtgebiet) - es gibt sogar einen
+offenen, unimplementierten Vorschlag für genau sowas
+([Crossing-Encoded-Values fürs Fußgänger-Routing](https://github.com/graphhopper/graphhopper/issues/2932)).
+
+Nutzer wählte den Ansatz "nachträglicher Check + Retry" (wie 6.9/6.12) statt eines grundlegenden
+Umbaus zu vollständiger Korridor-Verkettung für die Gesamtroute (letzteres bleibt als größeres,
+separates Vorhaben in Abschnitt 7 vorgemerkt).
+
+**Umsetzung:** `CorridorIndex` bekommt ein einfaches Bucket-Gitter über `RoadGraph.HardNodes`
+(Ampeln/Stopp, ~200m-Zellen, 3x3-Nachbarschaftssuche) und eine neue Methode
+`CountDisruptiveJunctionsNear(routeGeometry, proximityMeters)`, die zählt, wie viele
+UNTERSCHIEDLICHE Ampel-/Stopp-Knoten innerhalb von 25m irgendeines Punktes der fertigen Route
+liegen (nicht die volle Score-Funktion aus 3.4 - die braucht gerichteten Vorgänger/Nachfolger-
+Kontext im Graphen, den ein beliebiger Routen-Polylinienpunkt nicht hat). `RouteRequest.
+MaxDisruptiveJunctions` (null = kein Limit) nutzt denselben Retry-Loop wie die
+Untergrund-Limits aus 6.12 - dieselbe Zeitbudget-Absicherung gilt also automatisch mit. Der
+Fallback-Vergleich bei mehreren gleichzeitig gesetzten Limits nutzt eine grobe Heuristik
+("eine Kreuzung vermeiden ≈ 300m unbefestigten Untergrund vermeiden") nur für die Auswahl des
+bestmöglichen Kompromisses, nicht für die Prüfung der tatsächlichen Nutzer-Grenzwerte selbst.
+
+**Verworfene Nebenspur:** Beim Vergleich zweier realer Beispielstraßen (Hultschiner Damm vs.
+Wegendorfer Chaussee) fiel auf, dass `bicycle=use_sidepath`/`cycleway=separate` (eigener
+Radweg) ein interessantes zusätzliches Signal wäre - Nutzer stellte aber klar, dass für
+strukturiertes TRAINING wenig Unterbrechungen wichtiger ist als ein separater Radweg (eine
+ruhige Landstraße ohne Radweg schlägt eine belebtere Straße mit Radweg). Bleibt als mögliche
+spätere Idee vorgemerkt, aber nicht Teil dieser Umsetzung.
+
+Getestet: 2 neue Unit-Tests für `CountDisruptiveJunctionsNear` (zaehlt unterschiedliche Knoten
+nur einmal trotz mehrfacher Naehe, ignoriert weit entfernte Knoten), 1 neuer Test für die
+Verdrahtung in `RouteConstructionService`. Live gegen echtes GraphHopper verifiziert: strenges
+Limit (3 Kreuzungen) lief korrekt durch alle 10 Versuche und warnte mit Klartext-Zahlen (beste
+gefundene Variante: 36 Kreuzungen), großzügiges Limit (40) fand sofort eine passende Variante.
+
+## 6.14 Phase 2 — Bots/Suchmaschinen aussperren (durchgeführt)
+
+Nutzer wollte die (bewusst auth-lose, siehe DEPLOY.md) App vor Suchmaschinen-Indexierung und
+Bot-Traffic schützen. `frontend/public/robots.txt` (Disallow für alle) plus `<meta
+name="robots" content="noindex, nofollow, noarchive, nosnippet">` in `index.html`. API bekommt
+zusätzlich einen `X-Robots-Tag`-Header auf jede Antwort sowie eine einfache
+User-Agent-Substring-Sperre (403) gegen bekannte Crawler/Scraper (Google/Bing/Yandex, SEO-Bots
+wie Ahrefs/Semrush, KI-Crawler wie GPTBot/ClaudeBot/CCBot). **Kein Ersatz für echten
+Bot-/Rate-Limit-Schutz** (WAF/Cloudflare wären das) - erwischt nur Bots, die sich ehrlich per
+User-Agent identifizieren, hält aber die grosse Mehrheit der bekannten, gutartigen Crawler fern.
 
 ## 7. Offene Punkte
 

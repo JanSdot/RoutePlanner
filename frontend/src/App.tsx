@@ -47,6 +47,7 @@ export default function App() {
   // da 0 etwas anderes bedeuten wuerde (gar kein unbefestigter Untergrund erlaubt).
   const [maxUnpavedSegmentMeters, setMaxUnpavedSegmentMeters] = useState("");
   const [maxTotalUnpavedMeters, setMaxTotalUnpavedMeters] = useState("");
+  const [maxDisruptiveJunctions, setMaxDisruptiveJunctions] = useState("");
 
   const [inputMode, setInputMode] = useState<InputMode>("file");
   const [fitFile, setFitFile] = useState<File | null>(null);
@@ -84,6 +85,7 @@ export default function App() {
         allowUTurns,
         maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
         maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
+        maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
         fitFile: file,
       });
       setRouteResult(result);
@@ -108,6 +110,7 @@ export default function App() {
         allowUTurns,
         maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
         maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
+        maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
         fitFile: file,
       });
       downloadBlob(blob, "trainingsroute.gpx");
@@ -219,6 +222,16 @@ export default function App() {
                 type="number"
                 value={maxTotalUnpavedMeters}
                 onChange={(e) => setMaxTotalUnpavedMeters(e.target.value)}
+                min={0}
+                placeholder="kein Limit"
+              />
+            </label>
+            <label>
+              Max. Anzahl Ampeln/Kreuzungen
+              <input
+                type="number"
+                value={maxDisruptiveJunctions}
+                onChange={(e) => setMaxDisruptiveJunctions(e.target.value)}
                 min={0}
                 placeholder="kein Limit"
               />

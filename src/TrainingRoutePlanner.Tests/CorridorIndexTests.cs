@@ -103,4 +103,50 @@ public class CorridorIndexTests
 
         Assert.Null(corridor);
     }
+
+    [Fact]
+    public void CountDisruptiveJunctionsNear_CountsDistinctHardNodesNearRoute_NotDuplicatesOrFarNodes()
+    {
+        var graph = new RoadGraph();
+        // Zwei Ampel-Knoten (1, 3) nah an der Route, ein dritter (99) weit entfernt.
+        graph.SetCoordinate(1, new GeoPoint(52.500, 13.400));
+        graph.SetCoordinate(2, new GeoPoint(52.500, 13.401));
+        graph.SetCoordinate(3, new GeoPoint(52.500, 13.402));
+        graph.SetCoordinate(99, new GeoPoint(53.000, 14.000)); // weit weg, darf nicht mitgezaehlt werden
+        graph.HardNodes.Add(1);
+        graph.HardNodes.Add(3);
+        graph.HardNodes.Add(99);
+        graph.AddEdge(1, 2, 70, "residential");
+        graph.AddEdge(2, 3, 70, "residential");
+
+        var index = new CorridorIndex(graph);
+
+        // Route faehrt direkt an Knoten 1 und 3 vorbei (mehrere Punkte nahe Knoten 1, damit
+        // sichergestellt ist, dass er trotzdem nur EINMAL gezaehlt wird), aber nirgends nahe 99.
+        var routeGeometry = new[]
+        {
+            new GeoPoint(52.5001, 13.3999),
+            new GeoPoint(52.5000, 13.4000), // ~an Knoten 1
+            new GeoPoint(52.5000, 13.4001),
+            new GeoPoint(52.5000, 13.4020), // ~an Knoten 3
+        };
+
+        var count = index.CountDisruptiveJunctionsNear(routeGeometry, proximityMeters: 30);
+
+        Assert.Equal(2, count);
+    }
+
+    [Fact]
+    public void CountDisruptiveJunctionsNear_EmptyGraph_ReturnsZero()
+    {
+        var graph = new RoadGraph();
+        graph.SetCoordinate(1, new GeoPoint(52.500, 13.400));
+        graph.SetCoordinate(2, new GeoPoint(52.500, 13.410));
+        graph.AddEdge(1, 2, GeoMath.HaversineMeters(new GeoPoint(52.500, 13.400), new GeoPoint(52.500, 13.410)), "residential");
+
+        var index = new CorridorIndex(graph);
+        var count = index.CountDisruptiveJunctionsNear([new GeoPoint(52.500, 13.400)], proximityMeters: 100);
+
+        Assert.Equal(0, count);
+    }
 }

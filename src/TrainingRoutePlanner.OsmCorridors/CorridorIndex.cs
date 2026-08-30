@@ -12,8 +12,17 @@ public sealed class CorridorIndex : ICorridorIndex
     private readonly RoadGraph _graph;
     private readonly List<CorridorProfile> _corridors;
     private readonly List<BoundingBox> _bboxes;
+    private readonly Dictionary<(int, int), List<long>> _hardNodeGrid;
 
     private readonly record struct BoundingBox(double MinLat, double MaxLat, double MinLon, double MaxLon);
+
+    // Grobes Gitter ueber die Ampel-/Stopp-Knoten (RoadGraph.HardNodes) fuer
+    // CountDisruptiveJunctionsNear - kein generischer Spatial Index (siehe TryFindCorridor-
+    // Kommentar zum linearen Scan ueber Korridore, das bleibt ein bekannter Folgeschritt),
+    // sondern ein einfaches Bucket-Gitter extra fuer diese eine Abfrageart. Zellgroesse deutlich
+    // groesser als jede sinnvolle proximityMeters-Anfrage, damit ein 3x3-Nachbarzellen-Scan
+    // garantiert alle Kandidaten findet, auch nahe an Zellgrenzen.
+    private const double HardNodeGridCellMeters = 200.0;
 
     internal CorridorIndex(RoadGraph graph)
     {
@@ -27,7 +36,60 @@ public sealed class CorridorIndex : ICorridorIndex
             _corridors.Add(CorridorProfileBuilder.Build(graph, pathNodes));
             _bboxes.Add(ComputeBoundingBox(graph, pathNodes));
         }
+
+        _hardNodeGrid = BuildHardNodeGrid(graph);
     }
+
+    /// <summary>Siehe <see cref="ICorridorIndex.CountDisruptiveJunctionsNear"/>.</summary>
+    public int CountDisruptiveJunctionsNear(IReadOnlyList<GeoPoint> routeGeometry, double proximityMeters)
+    {
+        var found = new HashSet<long>();
+        foreach (var point in routeGeometry)
+        {
+            var (cellX, cellY) = HardNodeGridCell(point);
+            for (var dx = -1; dx <= 1; dx++)
+            {
+                for (var dy = -1; dy <= 1; dy++)
+                {
+                    if (!_hardNodeGrid.TryGetValue((cellX + dx, cellY + dy), out var candidates))
+                        continue;
+
+                    foreach (var nodeId in candidates)
+                    {
+                        if (found.Contains(nodeId))
+                            continue;
+                        if (GeoMath.HaversineMeters(point, _graph.Coordinates[nodeId]) <= proximityMeters)
+                            found.Add(nodeId);
+                    }
+                }
+            }
+        }
+
+        return found.Count;
+    }
+
+    private static Dictionary<(int, int), List<long>> BuildHardNodeGrid(RoadGraph graph)
+    {
+        var grid = new Dictionary<(int, int), List<long>>();
+        foreach (var nodeId in graph.HardNodes)
+        {
+            if (!graph.Coordinates.TryGetValue(nodeId, out var point))
+                continue;
+
+            var cell = HardNodeGridCell(point);
+            if (!grid.TryGetValue(cell, out var list))
+            {
+                list = new List<long>();
+                grid[cell] = list;
+            }
+            list.Add(nodeId);
+        }
+        return grid;
+    }
+
+    private static (int, int) HardNodeGridCell(GeoPoint p) => (
+        (int)Math.Floor(p.Lat * 111_320.0 / HardNodeGridCellMeters),
+        (int)Math.Floor(p.Lon * 111_320.0 * Math.Cos(GeoMath.DegreesToRadians(p.Lat)) / HardNodeGridCellMeters));
 
     /// <summary>Builds the full graph from a .osm.pbf file and extracts + scores all
     /// corridors once. Expensive (pbf parse + graph walk) - meant to run once per region

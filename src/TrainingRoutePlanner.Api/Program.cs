@@ -81,6 +81,30 @@ if (app.Environment.IsDevelopment())
 }
 app.UseCors(FrontendCorsPolicy);
 
+// App ist bewusst oeffentlich ohne Auth (siehe DEPLOY.md), soll aber nicht in Suchmaschinen
+// auftauchen und keine automatisierten Crawler/Scraper bedienen. X-Robots-Tag ist das
+// API-Aequivalent zum <meta name="robots"> im Frontend (dort zusaetzlich robots.txt). Die
+// User-Agent-Sperre erwischt nur Bots, die sich ehrlich identifizieren - kein Ersatz fuer
+// echten Bot-Schutz (Rate-Limiting/WAF), aber haelt bekannte SEO-/KI-Crawler ohne echten
+// Aufwand fern.
+var blockedUserAgentSubstrings = new[]
+{
+    "bot", "spider", "crawl", "slurp", "scrape", "archive.org_bot", "ccbot", "gptbot",
+    "claudebot", "google-extended", "bytespider", "petalbot", "semrushbot", "ahrefsbot",
+    "mj12bot", "dotbot", "yandex",
+};
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Robots-Tag"] = "noindex, nofollow";
+    var userAgent = context.Request.Headers.UserAgent.ToString();
+    if (blockedUserAgentSubstrings.Any(s => userAgent.Contains(s, StringComparison.OrdinalIgnoreCase)))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+    await next();
+});
+
 app.MapPost("/workout/build", (List<WorkoutBlockSpec> blocks) =>
 {
     if (blocks.Count == 0)
@@ -136,6 +160,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
     bool allowUTurns;
     double? maxUnpavedSegmentMeters;
     double? maxTotalUnpavedMeters;
+    int? maxDisruptiveJunctions;
     try
     {
         rider = new RiderProfile
@@ -152,6 +177,9 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         allowUTurns = !string.Equals(form["allowUTurns"], "false", StringComparison.OrdinalIgnoreCase);
         maxUnpavedSegmentMeters = ParseOptionalNullable("maxUnpavedSegmentMeters");
         maxTotalUnpavedMeters = ParseOptionalNullable("maxTotalUnpavedMeters");
+        maxDisruptiveJunctions = int.TryParse(form["maxDisruptiveJunctions"], NumberStyles.Integer, CultureInfo.InvariantCulture, out var junctions)
+            ? junctions
+            : null;
     }
     catch (ArgumentException ex)
     {
@@ -179,6 +207,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         AllowUTurns = allowUTurns,
         MaxUnpavedSegmentMeters = maxUnpavedSegmentMeters,
         MaxTotalUnpavedMeters = maxTotalUnpavedMeters,
+        MaxDisruptiveJunctions = maxDisruptiveJunctions,
     };
 
     try
