@@ -1,6 +1,8 @@
 import type { RouteFormInput, RouteResult, WorkoutBlockSpec } from "./types";
 
-const API_BASE_URL = "http://localhost:5080";
+// Zur Build-Zeit über Vite gesetzt (siehe .env.production / Render-Umgebungsvariable
+// VITE_API_BASE_URL) - lokal ohne .env-Datei Fallback auf den lokalen API-Port.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5080";
 
 function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData {
   const data = new FormData();

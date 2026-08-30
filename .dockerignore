@@ -1,0 +1,9 @@
+# Haelt den Docker-Build-Kontext klein - die Dockerfiles holen sich Rohdaten/Jars selbst
+# per Download, brauchen also nichts von den lokalen Build-/Cache-Artefakten hier.
+phase0-spike/
+frontend/node_modules/
+frontend/dist/
+src/*/bin/
+src/*/obj/
+.git/
+.claude/

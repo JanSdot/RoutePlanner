@@ -1,0 +1,55 @@
+# Render Blueprint - siehe https://render.com/docs/blueprint-spec
+#
+# Deployt drei Services:
+#   1. trainingrouteplanner-graphhopper - Java-Routing-Engine (siehe deploy/graphhopper.Dockerfile)
+#   2. trainingrouteplanner-api         - C#-Backend (siehe deploy/api.Dockerfile)
+#   3. trainingrouteplanner-frontend    - React/Vite-Static-Site
+#
+# WICHTIG vor dem Deploy:
+# - GraphHopper braucht fuer die 60km-Region um Berlin genug RAM (lokal mit -Xmx4g getestet,
+#   hier auf 2g gesetzt - siehe JAVA_MAX_HEAP unten). Der "starter"-Plan (512MB) reicht dafuer
+#   NICHT aus - mindestens "standard" (2GB) waehlen, sonst crasht der Import beim ersten Start.
+# - Beide Docker-Builds laden bei JEDEM Build den Berlin+Brandenburg-OSM-Extrakt neu von
+#   Geofabrik (~380MB) und schneiden ihn zu - das macht Builds langsamer (mehrere Minuten),
+#   haelt aber render.yaml unabhaengig von grossen Binaerdateien im Git-Repo.
+# - Falls "trainingrouteplanner-api"/"-frontend" als Servicename bereits von jemand anderem auf
+#   Render belegt ist, muesst ihr CORS_ALLOWED_ORIGIN bzw. VITE_API_BASE_URL unten auf die
+#   tatsaechlich zugewiesene *.onrender.com-URL anpassen (siehe Render-Dashboard nach dem
+#   ersten Anlegen der Services).
+
+services:
+  - type: web
+    name: trainingrouteplanner-graphhopper
+    runtime: docker
+    dockerfilePath: ./deploy/graphhopper.Dockerfile
+    dockerContext: .
+    plan: standard
+    healthCheckPath: /health
+    envVars:
+      - key: JAVA_MAX_HEAP
+        value: 2g
+
+  - type: web
+    name: trainingrouteplanner-api
+    runtime: docker
+    dockerfilePath: ./deploy/api.Dockerfile
+    dockerContext: .
+    plan: standard
+    healthCheckPath: /health
+    envVars:
+      - key: GraphHopper__Host
+        fromService:
+          type: web
+          name: trainingrouteplanner-graphhopper
+          property: hostport
+      - key: Cors__AllowedOrigin
+        value: https://trainingrouteplanner-frontend.onrender.com
+
+  - type: web
+    name: trainingrouteplanner-frontend
+    runtime: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: ./frontend/dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://trainingrouteplanner-api.onrender.com
