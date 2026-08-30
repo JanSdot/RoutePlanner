@@ -1003,8 +1003,53 @@ Zeitpunkt; ein Zeitpunkt weit in der Vergangenheit fiel korrekt auf "kein Wind" 
 zu scheitern; im echten Chrome bestätigt: Datumsfeld → Route berechnen → "Wind: 12 km/h aus
 West" im Ergebnis sichtbar.
 
+## 6.23 Phase 2 — Bugfix: Fallback-Auswahl ignorierte Dauer-Abweichung (durchgeführt)
+
+Live vom Nutzer gemeldet (2026-08-31): ein 120-min-GA1-Plan (FTP 148 W, 38 kg - extremes, aber
+gültiges Profil) lieferte nur 24,4 km/58 min. Ursache gefunden und reproduziert: bei eng
+gesetzten Grenzwerten (`maxUnpavedSegmentMeters=100`, `maxTotalUnpavedMeters=1000`,
+`maxDisruptiveJunctions=30`) erfüllte KEINE der 100 probierten Streckenvarianten alle
+Grenzwerte - die "beste gefundene Variante" (`BuildRouteAsync`s Badness-Fallback, siehe 6.9/6.12)
+wählt dann nur nach Untergrund/Kreuzungen, OHNE je zu prüfen, ob die Distanz überhaupt zum
+Trainingsplan passt. Ein round_trip-Seed, der zufällig eine deutlich KÜRZERE Schleife liefert
+(reale GraphHopper-round_trip-Ungenauigkeit), hat automatisch weniger absolute unbefestigte
+Meter/Kreuzungen einer kürzeren Route und "gewinnt" die Bewertung, obwohl er den Trainingsplan
+komplett verfehlt.
+
+**Fix:** Badness-Formel um einen Dauer-Abweichungs-Term erweitert
+(`DurationMismatchBadnessWeightMetersPerSecond = 10.0` - 10 Badness-Meter pro Sekunde
+Abweichung von der Plandauer, dominiert damit schon bei wenigen Minuten Abweichung jede
+realistische Untergrund-/Kreuzungs-Differenz). Zusätzlich `CheckApproachBudget` (4.4) auf BEIDE
+Richtungen erweitert - bisher wurde nur "Route zu LANG" gewarnt, nie "Route zu KURZ", obwohl
+genau das hier passiert ist. Dieselbe `MaxApproachMinutes`-Toleranz gilt jetzt symmetrisch.
+
+Getestet: 2 neue Unit-Tests (Fallback bevorzugt jetzt die dauer-korrekte Variante trotz etwas
+mehr unbefestigtem Untergrund; Warnung erscheint, wenn selbst die beste Variante die Dauer klar
+verfehlt), `FakeGraphHopperClient` um `ActualDistanceMetersBySeed` erweitert (simuliert reale
+round_trip-Ungenauigkeit - zurückgegebene Distanz muss nicht der angeforderten entsprechen),
+volle Testsuite (74/74) grün. Live mit den exakten gemeldeten Parametern erneut verifiziert:
+40,3 km/97 min statt vorher 24,4 km/58 min - deutlich näher am 120-min-Ziel.
+
+**Verbleibende, separate Ungenauigkeit (nicht Teil dieses Fixes):** die angezeigte "Geschätzte
+Zeit" stammt direkt aus GraphHoppers eigener `time`-Antwort (berechnet mit dem festen
+`limit_to: 25`-Profil-Speed, siehe 6.17), NICHT aus einer Neuberechnung über
+`PowerSpeedModel`/das tatsächliche Fahrerprofil. Bei Rennrad-typischen Profilen (FTP~250W/75kg)
+liegt GA1-Tempo (~24 km/h) nah genug an den flachen 25 km/h, dass der Unterschied kaum auffällt -
+bei einem sehr leichten/leistungsschwachen Profil wie im gemeldeten Fall (~21 km/h GA1-Tempo)
+zeigt sich die Lücke deutlich (97 statt der eigentlich angepeilten ~120 min). Echte Behebung
+würde eine Neuberechnung der Gesamtzeit über die tatsächliche finale Routengeometrie mit dem
+eigenen physikbasierten Modell erfordern - deutlich größerer Eingriff, bewusst NICHT Teil
+dieses Fixes, siehe Abschnitt 7.
+
 ## 7. Offene Punkte
 
+- **"Geschätzte Zeit" spiegelt nicht das tatsächliche Fahrerprofil wider** (siehe 6.23) - kommt
+  direkt aus GraphHoppers eigener, fest auf 25 km/h gesetzter `time`-Antwort statt aus einer
+  Neuberechnung über `PowerSpeedModel`. Faellt bei Rennrad-typischen Profilen kaum auf (nah an
+  25 km/h), bei sehr leichten/leistungsschwachen (oder sehr starken) Profilen aber deutlich.
+  Echte Behebung braeuchte eine Neuberechnung der Gesamtzeit ueber die tatsaechliche finale
+  Routengeometrie mit dem eigenen physikbasierten Modell statt GraphHoppers Wert einfach zu
+  uebernehmen.
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,
   brauchen echte Trainingsfahrten zur Kalibrierung — explizit Teil von Phase 3, nicht vorher
   lösbar)
