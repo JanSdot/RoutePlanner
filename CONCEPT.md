@@ -219,9 +219,32 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 
 ### Phase 4 — Später (nicht Teil des MVP)
 
-- Mehrbenutzerfähigkeit, Auth, Hosting/Deployment für andere Nutzer
+- **Mehrbenutzerfähigkeit/Auth/Vereine** (geplant, noch nicht umgesetzt) - Reihenfolge laut
+  Nutzer: (1) Nutzerkonten mit Login (Google + Microsoft OAuth, dazu klassische
+  E-Mail/Passwort-Registrierung als eigenes Subsystem - Passwort-Hashing, Reset-Flow etc.;
+  Apple Sign-In bewusst NICHT eingeplant, da es einen aktiven kostenpflichtigen Apple Developer
+  Account voraussetzt, den der Nutzer nicht hat), (2) Vereine mit Mitgliedschaft und Rollen
+  (normales Mitglied vs. "Verantwortlicher"), als Grundlage für ein mögliches späteres
+  Preismodell, (3) Migration der Sperr-Bereiche (6.18) von rein Frontend-Request-State zu
+  persistierten, pro-Nutzer ODER pro-Verein geltenden Ressourcen - eine Verein-weite Sperrung
+  muss dabei von einem Verantwortlichen freigegeben werden (Status pending/approved), eine
+  Nutzer-eigene Sperrung gilt sofort. Grundvoraussetzung fuer alle drei Stufen: die App hat
+  aktuell KEINERLEI Datenbank/Persistenz (alles zustandslos pro Anfrage, PBF-Daten einmalig
+  beim Start ins RAM geladen) - das muesste als Erstes eingefuehrt werden (z. B. verwaltetes
+  Postgres bei Render).
 - A-nach-B-Routing (statt nur Rundkurs)
-- Windmodellierung (aktuell bewusst ignoriert)
+- **Windmodellierung** (geplant, noch nicht umgesetzt) - Scope bewusst auf die Zeitschätzung
+  begrenzt, die Streckenführung selbst bleibt unverändert. Datenquelle: Open-Meteo (kostenlos,
+  kein API-Key), ein Abruf pro Routen-Anfrage für Startpunkt + geplanten Fahrzeitpunkt - dafür
+  fehlt aktuell noch ein Eingabefeld "wann geplant". `PowerSpeedModel` müsste den Luftwiderstand
+  über die relative Windgeschwindigkeit (Bodengeschwindigkeit ± Gegen-/Rückenwind-Komponente)
+  statt nur der reinen Bodengeschwindigkeit berechnen. Die Windkomponente pro Trainingsschritt
+  würde über denselben iterativen Verfeinerungs-Mechanismus wie das Höhenprofil (3.3/6.2)
+  bestimmt - ein neuer, kompass-wraparound-sicherer "durchschnittliche Peilung"-Helfer analog zu
+  `PolylineMath.AverageGradient`. Ein einzelner Windwert für die gesamte Fahrt (nicht pro
+  Segment neu abgerufen), bewusst grob wie andere Vereinfachungen im Modell. Ergebnis soll die
+  abgerufenen Windbedingungen (z. B. "Wind: 18 km/h aus West") anzeigen, damit die Zeitschätzung
+  nachvollziehbar bleibt.
 - Grundlegender Umbau: die GESAMTE Rundstrecke (nicht nur Intervall-Segmente wie bisher) aus
   aneinandergereihten, niedrig bewerteten Korridoren verketten statt GraphHoppers round_trip als
   Basis zu nutzen - naeher an der urspruenglichen Konzept-Idee als der leichtgewichtige
@@ -870,6 +893,36 @@ Getestet: neue Unit-Tests für `GraphHopperClient` (parst `smoothness`-`path_det
 fragt beide Details-Keys an) und `RouteConstructionService` (ein reiner smoothness=bad-Abschnitt
 ohne jedes surface-Problem löst denselben Retry-Mechanismus aus wie ein unbefestigter
 Oberflächen-Abschnitt), volle Testsuite grün.
+
+## 6.21 Phase 2 — Ampeln/Stoppschilder als optionaler Kartenlayer (durchgeführt)
+
+Nutzerwunsch: einen ein-/ausblendbaren Kartenlayer, der Ampeln und Stoppschilder anzeigt.
+
+**Datenlage:** `RoadGraph.HardNodes` (OSM `highway=traffic_signals`/`stop`) enthielt diese
+Knoten bereits vollständig - genutzt für `CountDisruptiveJunctionsNear` (6.13) -, aber ohne
+Typ-Unterscheidung (beide Tags flossen in dieselbe Menge). Für die Kartenanzeige war das zu
+grob, da Ampel und Stoppschild visuell unterschieden werden sollten.
+
+**Umsetzung:** Neues, zu `HardNodes` PARALLELES `RoadGraph.HardNodeTypes`
+(`Dictionary<long, HardNodeType>`, `HardNodeType` = `TrafficSignal`/`Stop`) - bewusst
+zusätzlich statt `HardNodes` selbst von `HashSet<long>` auf ein typisiertes Dictionary
+umzustellen, um die bestehende Score-/Zähl-Logik (`CorridorScoring`,
+`CountDisruptiveJunctionsNear`) und ihre 11 bestehenden Testfälle unangetastet zu lassen.
+`CorridorIndex.GetAllJunctions()` (neu auf `ICorridorIndex`) liefert alle Punkte mit Typ, neuer
+Endpunkt `GET /junctions` gibt sie unauthentifiziert komplett aus (kein Bounding-Box-Filter -
+konsistent mit dem Ansatz, die gesamte Region einmalig im Speicher zu halten, siehe 4.1). Live
+verifiziert: 9.957 Knoten insgesamt (9.047 Ampeln, 910 Stoppschilder), ~920 KB JSON - für einen
+einmaligen Abruf unproblematisch groß.
+
+Frontend: `MapView` fetcht `/junctions` einmalig beim Mounten (nicht bei jedem Ein-/Ausblenden
+neu) und cached als MapLibre-GeoJSON-Source; das Ein-/Ausblenden schaltet nur die
+`visibility`-Layout-Property des Layers um. Ampeln rot, Stoppschilder orange (`circle-color`
+per `match`-Ausdruck auf das `type`-Feld, analog zum bestehenden `segmentColorExpression`-Muster).
+Checkbox "Ampeln/Stoppschilder auf der Karte anzeigen" in den Einstellungen. Im echten Chrome
+bestätigt: dichtes Ampel-Netz in Berlin sichtbar, Ein-/Ausblenden funktioniert ohne erneuten
+Netzwerk-Request.
+
+Getestet: neuer Unit-Test für `CorridorIndex.GetAllJunctions()`, volle Testsuite (66/66) grün.
 
 ## 7. Offene Punkte
 

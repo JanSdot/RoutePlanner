@@ -68,6 +68,8 @@ export default function App() {
     setRequiredPoints((prev) => prev.filter((_, i) => i !== index));
   }
 
+  const [showJunctions, setShowJunctions] = useState(false);
+
   const [inputMode, setInputMode] = useState<InputMode>("file");
   const [fitFile, setFitFile] = useState<File | null>(null);
   const [editorBlocks, setEditorBlocks] = useState<WorkoutBlockSpec[]>([]);
@@ -235,6 +237,14 @@ export default function App() {
               />
               Kehrtwenden erlauben
             </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={showJunctions}
+                onChange={(e) => setShowJunctions(e.target.checked)}
+              />
+              Ampeln/Stoppschilder auf der Karte anzeigen
+            </label>
             <label>
               Max. Länge je unbefestigtem Abschnitt (m)
               <input
@@ -373,6 +383,7 @@ export default function App() {
           onAddBlockedArea={addBlockedArea}
           requiredPoints={requiredPoints}
           onAddRequiredPoint={addRequiredPoint}
+          showJunctions={showJunctions}
         />
       </main>
     </div>

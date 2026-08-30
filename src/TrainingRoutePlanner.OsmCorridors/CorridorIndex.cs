@@ -68,6 +68,18 @@ public sealed class CorridorIndex : ICorridorIndex
         return found.Count;
     }
 
+    /// <summary>Siehe <see cref="ICorridorIndex.GetAllJunctions"/>.</summary>
+    public IReadOnlyList<Junction> GetAllJunctions()
+    {
+        var result = new List<Junction>(_graph.HardNodeTypes.Count);
+        foreach (var (nodeId, type) in _graph.HardNodeTypes)
+        {
+            if (_graph.Coordinates.TryGetValue(nodeId, out var point))
+                result.Add(new Junction(point, type));
+        }
+        return result;
+    }
+
     private static Dictionary<(int, int), List<long>> BuildHardNodeGrid(RoadGraph graph)
     {
         var grid = new Dictionary<(int, int), List<long>>();

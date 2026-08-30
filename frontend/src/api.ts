@@ -1,4 +1,4 @@
-import type { RouteFormInput, RouteResult, WorkoutBlockSpec } from "./types";
+import type { Junction, RouteFormInput, RouteResult, WorkoutBlockSpec } from "./types";
 
 // Zur Build-Zeit über Vite gesetzt (siehe .env.production / Render-Umgebungsvariable
 // VITE_API_BASE_URL) - lokal ohne .env-Datei Fallback auf den lokalen API-Port.
@@ -59,6 +59,17 @@ export async function requestRouteGpx(input: RouteFormInput): Promise<Blob> {
     throw new Error(text || `GPX-Export fehlgeschlagen (HTTP ${response.status})`);
   }
   return await response.blob();
+}
+
+// Einmaliger Abruf fuer den optionalen Ampeln/Stoppschilder-Kartenlayer (siehe MapView) -
+// wird vom Frontend gecacht, nicht bei jedem Toggle neu geladen.
+export async function requestJunctions(): Promise<Junction[]> {
+  const response = await fetch(`${API_BASE_URL}/junctions`);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Ampeln/Stoppschilder-Abruf fehlgeschlagen (HTTP ${response.status})`);
+  }
+  return (await response.json()) as Junction[];
 }
 
 export async function buildWorkoutFitFile(blocks: WorkoutBlockSpec[]): Promise<File> {

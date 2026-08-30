@@ -73,6 +73,12 @@ if (app.Environment.IsDevelopment())
 
 app.MapGet("/health", () => Results.Ok());
 
+// Ampeln/Stoppschilder fuer den optionalen Kartenlayer (CONCEPT.md 6.21) - einmalig geladen,
+// gesamte Region auf einmal statt bounding-box-basiert, konsistent mit CorridorIndex' Ansatz
+// einer einzigen fest im Speicher gehaltenen Region (siehe CONCEPT.md 4.1).
+app.MapGet("/junctions", (ICorridorIndex corridorIndex) => Results.Ok(corridorIndex.GetAllJunctions()))
+    .WithName("GetJunctions");
+
 // Render terminiert TLS an seinem eigenen Edge und leitet intern per HTTP weiter - ein
 // erzwungenes Redirect hier wuerde ohne Forwarded-Header-Auswertung ins Leere laufen.
 // Lokal (Development) bleibt es wie gehabt aktiv.

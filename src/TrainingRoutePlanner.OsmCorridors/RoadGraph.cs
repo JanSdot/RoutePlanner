@@ -18,6 +18,12 @@ internal sealed class RoadGraph
     public HashSet<long> GiveWayNodes { get; } = new();
     public HashSet<long> RoundaboutNodes { get; } = new();
 
+    // Parallel zu HardNodes: welcher Knoten Ampel vs. Stoppschild ist - fuer den optionalen
+    // Kartenlayer (CONCEPT.md 6.21). Getrennt von HardNodes gehalten statt dessen Typ zu
+    // HashSet<long> auf Dictionary<long, HardNodeType> zu aendern, um die bestehende
+    // Score-/Zaehl-Logik (CorridorScoring, CountDisruptiveJunctionsNear) unangetastet zu lassen.
+    public Dictionary<long, HardNodeType> HardNodeTypes { get; } = new();
+
     public IReadOnlyDictionary<long, GeoPoint> Coordinates => _coordinates;
 
     public IEnumerable<long> Nodes => _adjacency.Keys;

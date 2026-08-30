@@ -83,6 +83,8 @@ public class RouteConstructionServiceTests
         public int CountDisruptiveJunctionsNear(IReadOnlyList<GeoPoint> routeGeometry, double proximityMeters) =>
             JunctionCountResponder?.Invoke(routeGeometry) ?? 0;
 
+        public IReadOnlyList<Junction> GetAllJunctions() => [];
+
         public Corridor? TryFindCorridor(GeoPoint near, double minLengthMeters, double maxDisruptionScore, double searchRadiusMeters)
         {
             var call = (near, minLengthMeters, maxDisruptionScore, searchRadiusMeters);

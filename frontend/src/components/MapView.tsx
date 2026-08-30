@@ -3,7 +3,8 @@ import { Map as MapLibreMap, Marker, LngLatBounds, Popup } from "maplibre-gl";
 import type { StyleSpecification, GeoJSONSource, ExpressionSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { FeatureCollection, LineString, Point } from "geojson";
-import type { GeoPoint, RouteSegment, SurfaceSegment, BlockedArea } from "../types";
+import type { GeoPoint, RouteSegment, SurfaceSegment, BlockedArea, Junction } from "../types";
+import { requestJunctions } from "../api";
 
 // Fester Radius fuer per Klick gesperrte Bereiche - kein UI-Element zum Anpassen, um die
 // Interaktion einfach zu halten (siehe CONCEPT.md Abschnitt 6.18).
@@ -64,6 +65,7 @@ interface MapViewProps {
   onAddBlockedArea: (area: BlockedArea) => void;
   requiredPoints: GeoPoint[];
   onAddRequiredPoint: (point: GeoPoint) => void;
+  showJunctions: boolean;
 }
 
 export function MapView({
@@ -76,6 +78,7 @@ export function MapView({
   onAddBlockedArea,
   requiredPoints,
   onAddRequiredPoint,
+  showJunctions,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -86,6 +89,8 @@ export function MapView({
   onAddBlockedAreaRef.current = onAddBlockedArea;
   const onAddRequiredPointRef = useRef(onAddRequiredPoint);
   onAddRequiredPointRef.current = onAddRequiredPoint;
+  const showJunctionsRef = useRef(showJunctions);
+  showJunctionsRef.current = showJunctions;
   // MapLibre's "load" event fires exactly once per map instance. isStyleLoaded() can also
   // transiently report false during unrelated tile activity long after the initial load, so
   // neither is safe to re-check on every route update - track it ourselves instead.
@@ -245,6 +250,63 @@ export function MapView({
       map.once("load", applyRequiredPoints);
     }
   }, [requiredPoints]);
+
+  // Ampeln/Stoppschilder-Layer (CONCEPT.md 6.21): einmaliger Abruf pro Kartensitzung (nicht bei
+  // jedem Ein-/Ausblenden neu geladen), Sichtbarkeit danach nur ueber die MapLibre-
+  // "visibility"-Layout-Property umgeschaltet.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    let cancelled = false;
+
+    const addJunctionsLayer = async () => {
+      let junctions: Junction[];
+      try {
+        junctions = await requestJunctions();
+      } catch {
+        return; // Kein hartes UI-Fehlerfeedback fuer diesen rein informativen Layer.
+      }
+      if (cancelled || map.getSource("junctions")) return;
+
+      const geojson: FeatureCollection<Point> = {
+        type: "FeatureCollection",
+        features: junctions.map((j) => ({
+          type: "Feature",
+          properties: { type: j.type },
+          geometry: { type: "Point", coordinates: [j.point.lon, j.point.lat] },
+        })),
+      };
+      map.addSource("junctions", { type: "geojson", data: geojson });
+      map.addLayer({
+        id: "junctions-circle",
+        type: "circle",
+        source: "junctions",
+        layout: { visibility: showJunctionsRef.current ? "visible" : "none" },
+        paint: {
+          "circle-radius": 4,
+          "circle-color": ["match", ["get", "type"], "TrafficSignal", "#dc2626", "Stop", "#ea580c", "#64748b"],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1,
+        },
+      });
+    };
+
+    if (styleReadyRef.current) {
+      addJunctionsLayer();
+    } else {
+      map.once("load", addJunctionsLayer);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getLayer("junctions-circle")) return;
+    map.setLayoutProperty("junctions-circle", "visibility", showJunctions ? "visible" : "none");
+  }, [showJunctions]);
 
   useEffect(() => {
     const map = mapRef.current;

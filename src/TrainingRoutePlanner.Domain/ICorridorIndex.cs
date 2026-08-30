@@ -13,4 +13,9 @@ public interface ICorridorIndex
     /// GESAMTEN Route (nicht nur einzelner Korridor-Abschnitte), siehe RouteRequest.
     /// MaxDisruptiveJunctions.</summary>
     int CountDisruptiveJunctionsNear(IReadOnlyList<GeoPoint> routeGeometry, double proximityMeters);
+
+    /// <summary>Alle Ampeln/Stoppschilder der geladenen Region, fuer den optionalen
+    /// Karten-Layer (CONCEPT.md 6.21) - unabhaengig von CountDisruptiveJunctionsNear (das
+    /// zaehlt nur Treffer NAHE einer gegebenen Route).</summary>
+    IReadOnlyList<Junction> GetAllJunctions();
 }

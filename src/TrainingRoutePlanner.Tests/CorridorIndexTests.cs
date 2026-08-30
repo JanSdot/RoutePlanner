@@ -149,4 +149,26 @@ public class CorridorIndexTests
 
         Assert.Equal(0, count);
     }
+
+    [Fact]
+    public void GetAllJunctions_ReturnsPointsWithCorrectType()
+    {
+        var graph = new RoadGraph();
+        graph.SetCoordinate(1, new GeoPoint(52.500, 13.400));
+        graph.SetCoordinate(2, new GeoPoint(52.500, 13.401));
+        graph.SetCoordinate(3, new GeoPoint(52.500, 13.402));
+        graph.HardNodes.Add(1);
+        graph.HardNodes.Add(3);
+        graph.HardNodeTypes[1] = HardNodeType.TrafficSignal;
+        graph.HardNodeTypes[3] = HardNodeType.Stop;
+        graph.AddEdge(1, 2, 70, "residential");
+        graph.AddEdge(2, 3, 70, "residential");
+
+        var index = new CorridorIndex(graph);
+        var junctions = index.GetAllJunctions();
+
+        Assert.Equal(2, junctions.Count);
+        Assert.Contains(junctions, j => j.Point.Equals(new GeoPoint(52.500, 13.400)) && j.Type == HardNodeType.TrafficSignal);
+        Assert.Contains(junctions, j => j.Point.Equals(new GeoPoint(52.500, 13.402)) && j.Type == HardNodeType.Stop);
+    }
 }

@@ -87,6 +87,7 @@ internal static class PbfGraphBuilder
         if (highway is "traffic_signals" or "stop")
         {
             graph.HardNodes.Add(node.Id.Value);
+            graph.HardNodeTypes[node.Id.Value] = highway == "traffic_signals" ? HardNodeType.TrafficSignal : HardNodeType.Stop;
         }
         else if (highway == "give_way")
         {

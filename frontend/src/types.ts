@@ -19,6 +19,12 @@ export interface SurfaceSegment {
   geometry: GeoPoint[];
 }
 
+// Ampel/Stoppschild fuer den optionalen Kartenlayer - siehe Junction (Backend).
+export interface Junction {
+  point: GeoPoint;
+  type: "TrafficSignal" | "Stop";
+}
+
 export interface RouteResult {
   geometry: GeoPoint[];
   totalDistanceMeters: number;
