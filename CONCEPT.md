@@ -725,6 +725,56 @@ Verifiziert: direkte Route zwischen den beiden Enden des gemeldeten Track-Wegs n
 einen ca. 2,3 km-Umweg über `path`/`residential`/`unclassified` statt der direkten ~850 m über
 `track`.
 
+## 6.17 Phase 2 — GraphHoppers "racingbike"-Template als Profil-Fundament (durchgeführt)
+
+Nutzer fragte, ob man GraphHopper direkt mitteilen kann, dass ein Rennrad geroutet werden soll.
+GraphHopper hat dafür ein fertiges, mitgeliefertes Custom-Model-Template
+(`core/src/main/resources/com/graphhopper/custom_models/racingbike.json`) - deutlich
+ausgefeilter als unser bisher komplett selbst gebautes Profil:
+
+```json
+{
+  "priority": [
+    { "if": "true",  "multiply_by": "racingbike_priority" },
+    { "if": "bike_network == INTERNATIONAL || bike_network == NATIONAL",  "multiply_by": "1.2" },
+    { "else_if": "bike_network == REGIONAL || bike_network == LOCAL",  "multiply_by": "1.1" },
+    { "if": "road_environment == FERRY", "multiply_by": "0.5" },
+    { "if": "mtb_rating > 2",  "multiply_by": "0" },
+    { "else_if": "mtb_rating == 2",  "multiply_by": "0.5" },
+    { "if": "hike_rating > 1",  "multiply_by": "0" },
+    { "if": "bike_road_access == NO", "multiply_by": "0" },
+    { "if": "!racingbike_access && (!backward_racingbike_access || roundabout)",  "multiply_by": "0" },
+    { "else_if": "!racingbike_access && backward_racingbike_access",  "multiply_by": "0.2" }
+  ]
+}
+```
+
+`racingbike_priority` ist ein von GraphHopper selbst aus Straßentyp/Oberfläche/etc. berechneter
+Gesamt-Eignungswert pro Weg (numerisch, in Stichproben zwischen 0.9 und 1.3 beobachtet) -
+`racingbike_access`/`mtb_rating`/`hike_rating`/`bike_road_access` decken Zugangs- und
+Technik-Einschränkungen ab, die wir bisher gar nicht kannten. `bike_network` bevorzugt sogar
+offiziell ausgewiesene Radrouten. Wortgleich übernommen als Fundament, unsere bisherigen
+Ergänzungen (MOTORWAY/TRACK-Ausschluss, `bike_access`, `urban_density`-Abwertung,
+Untergrund-Denyliste) bleiben bewusst redundant obendrauf bestehen - schadet nicht, schützt aber
+falls das Template einen Fall doch nicht abdeckt (z. B. `bike_access`/`racingbike_access` wurden
+nicht auf Gleichwertigkeit geprüft, bevor eine der beiden Regeln entfernt würde).
+
+**Bewusst NICHT übernommen:** Das Template hat auch eigene `speed`-Regeln
+(`racingbike_average_speed`). Unsere Zeitschätzung hängt am eigenen physikbasierten
+`PowerSpeedModel` (FTP/Gewicht/Zonenleistung), das GraphHoppers zurückgegebene `time` für die
+Streckenlänge je Trainingsschritt nutzt - ein variables GraphHopper-eigenes
+Geschwindigkeitsmodell würde diese Schätzung verfälschen bzw. inkonsistent zur angezeigten
+"Geschätzte Zeit" machen. Der bisherige feste `limit_to: 25`-Wert bleibt daher unverändert.
+
+Neue Encoded Values: `racingbike_access, racingbike_average_speed, racingbike_priority,
+bike_network, mtb_rating, hike_rating, bike_road_access` - kompletter Reimport nötig (siehe
+6.16 zum Hash-Check).
+
+Verifiziert: `/info` zeigt alle neuen Encoded Values mit plausiblen Werten. Keine Regression bei
+den vorherigen Fixes (B1 `bicycle=no` weiterhin gemieden, Berlin-Mitte weiterhin korrekt als
+`city` erkannt, `highway=track` weiterhin gemieden). Voller Testlauf (58/58) und ein
+End-to-End-Routen-Test über die lokale API ohne Warnungen bestätigt.
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,

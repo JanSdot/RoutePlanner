@@ -2,7 +2,7 @@ graphhopper:
   datareader.file: ../data/sportforum-60km.osm.pbf
   graph.location: ./graph-cache
   import.osm.ignored_highways: ""
-  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope,bike_access,urban_density
+  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope,bike_access,urban_density,racingbike_access,racingbike_average_speed,racingbike_priority,bike_network,mtb_rating,hike_rating,bike_road_access
   # Ohne explizites threads>=1 stuerzt der Import ab (ForkJoinPool mit parallelism=0 wirft
   # IllegalArgumentException) - GraphHopper hat hierfuer keinen brauchbaren Default.
   graph.urban_density.threads: 4
@@ -14,30 +14,47 @@ graphhopper:
     - name: bike
       custom_model:
         priority:
+          # GraphHoppers eigenes "racingbike"-Template als Fundament, siehe
+          # deploy/graphhopper-config.yml und CONCEPT.md Abschnitt 6.17.
+          - if: "true"
+            multiply_by: "racingbike_priority"
+          - if: "bike_network == INTERNATIONAL || bike_network == NATIONAL"
+            multiply_by: "1.2"
+          - else_if: "bike_network == REGIONAL || bike_network == LOCAL"
+            multiply_by: "1.1"
+          - if: "road_environment == FERRY"
+            multiply_by: "0.5"
+          - if: "mtb_rating > 2"
+            multiply_by: "0"
+          - else_if: "mtb_rating == 2"
+            multiply_by: "0.5"
+          - if: "hike_rating > 1"
+            multiply_by: "0"
+          - if: "bike_road_access == NO"
+            multiply_by: "0"
+          - if: "!racingbike_access && (!backward_racingbike_access || roundabout)"
+            multiply_by: "0"
+          - else_if: "!racingbike_access && backward_racingbike_access"
+            multiply_by: "0.2"
+          # --- Eigene Ergaenzungen obendrauf ---
           - if: "road_class == MOTORWAY"
             multiply_by: "0"
-          # highway=track (Feld-/Waldwege) komplett ausschliessen - siehe
-          # deploy/graphhopper-config.yml und CONCEPT.md Abschnitt 6.16.
+          # highway=track - siehe deploy/graphhopper-config.yml und CONCEPT.md Abschnitt 6.16.
           - if: "road_class == TRACK"
             multiply_by: "0"
-          # OSM bicycle=no/access=no (und motorroad=yes) - siehe deploy/graphhopper-config.yml
-          # und CONCEPT.md Abschnitt 6.10.
+          # OSM bicycle=no/access=no - siehe deploy/graphhopper-config.yml und CONCEPT.md
+          # Abschnitt 6.10.
           - if: "!bike_access"
             multiply_by: "0"
-          # Staedtische Ballungsgebiete abwerten, nicht ausschliessen - der Startpunkt (Sportforum
-          # Berlin) liegt selbst in einem CITY-Gebiet, ein hartes Verbot wuerde die Routenerstellung
-          # dort unmoeglich machen. Siehe CONCEPT.md Abschnitt 6.11.
+          # Staedtische Ballungsgebiete abwerten - siehe CONCEPT.md Abschnitt 6.11.
           - if: "urban_density == CITY"
             multiply_by: "0.5"
-          # Rauen/unbefestigten Untergrund abwerten, nicht ausschliessen - macht bereits den
-          # ersten round_trip-Versuch deutlich wahrscheinlicher konform mit den
-          # Untergrund-Limits aus 6.9, statt rein auf zufaellig guenstige Seeds zu hoffen. Siehe
-          # CONCEPT.md Abschnitt 6.12. "missing"/PAVED/ASPHALT/CONCRETE/PAVING_STONES bewusst
-          # nicht abgewertet - siehe SurfaceClassifier.IsUnpaved (Domain) fuer dieselbe
-          # Denyliste-Begruendung.
+          # Rauen/unbefestigten Untergrund abwerten - siehe CONCEPT.md Abschnitt 6.12.
           - if: "surface == UNPAVED || surface == COMPACTED || surface == FINE_GRAVEL || surface == GRAVEL || surface == GROUND || surface == DIRT || surface == GRASS || surface == SAND || surface == COBBLESTONE"
             multiply_by: "0.5"
         speed:
+          # Bewusst NICHT racingbike_average_speed - siehe deploy/graphhopper-config.yml fuer
+          # die Begruendung (eigene physikbasierte Zeitschaetzung, PowerSpeedModel).
           - if: "true"
             limit_to: "25"
 

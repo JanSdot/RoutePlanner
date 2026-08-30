@@ -2,7 +2,7 @@ graphhopper:
   datareader.file: ./data/sportforum-60km.osm.pbf
   graph.location: ./graph-cache
   import.osm.ignored_highways: ""
-  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope,bike_access,urban_density
+  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope,bike_access,urban_density,racingbike_access,racingbike_average_speed,racingbike_priority,bike_network,mtb_rating,hike_rating,bike_road_access
   # Ohne explizites threads>=1 stuerzt der Import ab (ForkJoinPool mit parallelism=0 wirft
   # IllegalArgumentException) - GraphHopper hat hierfuer keinen brauchbaren Default.
   graph.urban_density.threads: 4
@@ -14,6 +14,36 @@ graphhopper:
     - name: bike
       custom_model:
         priority:
+          # GraphHoppers eigenes, vorgefertigtes "racingbike"-Template als Fundament (siehe
+          # CONCEPT.md Abschnitt 6.17) - racingbike_priority ist ein von GraphHopper selbst aus
+          # Strassentyp/Oberflaeche/etc. berechneter Gesamt-Eignungswert pro Weg,
+          # racingbike_access/mtb_rating/hike_rating/bike_road_access decken Zugangs- und
+          # Technik-Einschraenkungen ab, die wir bisher nicht kannten. Wortgleich uebernommen
+          # aus core/src/main/resources/com/graphhopper/custom_models/racingbike.json, NUR ohne
+          # dessen speed-Regeln (siehe unten).
+          - if: "true"
+            multiply_by: "racingbike_priority"
+          - if: "bike_network == INTERNATIONAL || bike_network == NATIONAL"
+            multiply_by: "1.2"
+          - else_if: "bike_network == REGIONAL || bike_network == LOCAL"
+            multiply_by: "1.1"
+          - if: "road_environment == FERRY"
+            multiply_by: "0.5"
+          - if: "mtb_rating > 2"
+            multiply_by: "0"
+          - else_if: "mtb_rating == 2"
+            multiply_by: "0.5"
+          - if: "hike_rating > 1"
+            multiply_by: "0"
+          - if: "bike_road_access == NO"
+            multiply_by: "0"
+          - if: "!racingbike_access && (!backward_racingbike_access || roundabout)"
+            multiply_by: "0"
+          - else_if: "!racingbike_access && backward_racingbike_access"
+            multiply_by: "0.2"
+          # --- Eigene Ergaenzungen obendrauf (redundant zum Template ist hier bewusst in Kauf
+          # genommen - schadet nicht, schuetzt aber falls das Template einen Fall doch nicht
+          # abdeckt, siehe CONCEPT.md 6.17) ---
           - if: "road_class == MOTORWAY"
             multiply_by: "0"
           # highway=track (Feld-/Waldwege) komplett ausschliessen - unsere eigene
@@ -44,6 +74,12 @@ graphhopper:
           - if: "surface == UNPAVED || surface == COMPACTED || surface == FINE_GRAVEL || surface == GRAVEL || surface == GROUND || surface == DIRT || surface == GRASS || surface == SAND || surface == COBBLESTONE"
             multiply_by: "0.5"
         speed:
+          # Bewusst NICHT racingbike_average_speed uebernommen: unsere eigene Zeitschaetzung
+          # (PowerSpeedModel, physikbasiert aus FTP/Gewicht/Zonenleistung) haengt an
+          # GraphHoppers zurueckgegebener "time" fuer die Streckenlaenge je Trainingsschritt -
+          # ein variables, GraphHopper-eigenes Geschwindigkeitsmodell wuerde diese Schaetzung
+          # verfaelschen bzw. inkonsistent zur angezeigten "Geschaetzte Zeit" machen. Ein fester
+          # Wert haelt die Zeitschaetzung ausschliesslich an unser eigenes Modell gebunden.
           - if: "true"
             limit_to: "25"
 
