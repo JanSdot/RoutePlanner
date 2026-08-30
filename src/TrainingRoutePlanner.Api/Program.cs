@@ -9,6 +9,15 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 
+const string FrontendCorsPolicy = "FrontendDevServer";
+builder.Services.AddCors(options =>
+{
+    // Phase 2 MVP: Vite-Dev-Server-Origin fest erlaubt, kein Auth/Multi-User noetig
+    // (siehe CONCEPT.md Abschnitt 6 Phase 2).
+    options.AddPolicy(FrontendCorsPolicy, policy =>
+        policy.WithOrigins("http://localhost:5173").AllowAnyHeader().AllowAnyMethod());
+});
+
 builder.Services.AddHttpClient<IGraphHopperClient, GraphHopperClient>((sp, http) =>
 {
     var baseUrl = sp.GetRequiredService<IConfiguration>()["GraphHopper:BaseUrl"]
@@ -38,6 +47,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+app.UseCors(FrontendCorsPolicy);
 
 app.MapPost("/route", async (HttpRequest request, RouteConstructionService routeService, FitWorkoutParser fitParser) =>
 {
@@ -107,6 +117,11 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
     try
     {
         var result = await routeService.BuildRouteAsync(routeRequest);
+        if (string.Equals(form["format"], "gpx", StringComparison.OrdinalIgnoreCase))
+        {
+            var gpx = GpxWriter.ToGpx(result);
+            return Results.Text(gpx, "application/gpx+xml");
+        }
         return Results.Ok(result);
     }
     catch (GraphHopperException ex)
