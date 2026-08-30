@@ -249,6 +249,14 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
   kostet aehnlich wie Render's verwaltetes Postgres, aber ohne automatische Backups, und ein
   Disk bindet den Dienst dauerhaft an eine einzelne Instanz, verhindert also jede spaetere
   horizontale Skalierung).
+
+  **Status (2026-08-30):** Neon-Projekt "WattLoop" angelegt und per Neon-CLI verknuepft
+  (`neon link`), neues Projekt `TrainingRoutePlanner.Data` mit `WattLoopDbContext` (ASP.NET
+  Core Identity Standard-Schema) angelegt, `DATABASE_URL` (Neon-URI) wird zur Laufzeit in einen
+  Npgsql-Verbindungsstring uebersetzt (lokal aus `.env.local`, auf Render direkt als echte
+  Umgebungsvariable). Initiale Migration erstellt und live gegen die echte Neon-DB angewendet,
+  Tabellen per `neon psql` verifiziert. NOCH NICHT umgesetzt: Registrierungs-/Login-Endpunkte
+  selbst (dieser Schritt hat nur die Infrastruktur verbunden).
 - A-nach-B-Routing (statt nur Rundkurs)
 - **Windmodellierung** (geplant, noch nicht umgesetzt) - Scope bewusst auf die Zeitschätzung
   begrenzt, die Streckenführung selbst bleibt unverändert. Datenquelle: Open-Meteo (kostenlos,
