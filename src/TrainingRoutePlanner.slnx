@@ -1,0 +1,9 @@
+<Solution>
+  <Project Path="TrainingRoutePlanner.Api/TrainingRoutePlanner.Api.csproj" />
+  <Project Path="TrainingRoutePlanner.Domain/TrainingRoutePlanner.Domain.csproj" />
+  <Project Path="TrainingRoutePlanner.FitParsing/TrainingRoutePlanner.FitParsing.csproj" />
+  <Project Path="TrainingRoutePlanner.OsmCorridors/TrainingRoutePlanner.OsmCorridors.csproj" />
+  <Project Path="TrainingRoutePlanner.PowerModel/TrainingRoutePlanner.PowerModel.csproj" />
+  <Project Path="TrainingRoutePlanner.RouteEngine/TrainingRoutePlanner.RouteEngine.csproj" />
+  <Project Path="TrainingRoutePlanner.Tests/TrainingRoutePlanner.Tests.csproj" />
+</Solution>
