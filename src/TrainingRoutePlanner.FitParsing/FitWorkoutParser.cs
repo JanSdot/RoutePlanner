@@ -186,6 +186,22 @@ public sealed class FitWorkoutParser
     private static TrainingStep ResolveStep(WorkoutStepMesg step, int stepPos, RiderProfile profile)
     {
         var duration = ResolveDuration(step, stepPos);
+
+        // KNOWN GAP (empirically confirmed against Garmin.FIT.Sdk 21.214.0, not assumed): if any
+        // workout_step in the file omits wkt_step_name entirely (a repeat_steps marker never has
+        // one - see Cookbook/WorkoutEncode/Program.cs's CreateWorkoutStepRepeat, which never
+        // calls SetWktStepName), Decode corrupts GetWktStepNameAsString() for every workout_step
+        // in that file into null-byte garbage - including ones that DO set a name and were
+        // already decoded earlier in the stream. Confirmed via a real-file (not just
+        // MemoryStream) round trip and a raw hex dump showing the on-disk bytes are actually
+        // correct; the corruption happens purely on the SDK's decode side. Only the string Name
+        // field is affected - all numeric target/duration fields decode correctly regardless.
+        // Since repeat_steps markers are a normal, common construct (CONCEPT.md Abschnitt 5), any
+        // FIT workout with named steps *and* a repeat block may silently lose step Labels on
+        // decode. There is no workaround available from this project's side (the corruption
+        // happens inside the third-party SDK before our code sees the value), so this is
+        // reported as a known limitation rather than silently trusted. Duration/TargetPowerWatts/
+        // MaxDisruptionScore are unaffected - Label is purely cosmetic.
         var label = step.GetWktStepNameAsString();
         var targetType = step.GetTargetType() ?? WktStepTarget.Open;
 

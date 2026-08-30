@@ -80,6 +80,21 @@ public class FitWorkoutParserTests
         step.SetDurationValue(repeatFromMessageIndex);
         step.SetTargetType(WktStepTarget.Open);
         step.SetTargetValue(repetitions);
+
+        // Empirically confirmed (not guessed) SDK quirk in Garmin.FIT.Sdk 21.214.0: if one
+        // workout_step in a file omits wkt_step_name (field 0) while sibling steps set it,
+        // Decode corrupts the wkt_step_name STRING field for every step of that message type in
+        // the file - including ones already decoded earlier in the stream - even though the raw
+        // encoded bytes on disk are correct (verified with a hex dump). Numeric fields are
+        // unaffected. Repro: encode 3 named Time steps + 1 unnamed RepeatUntilStepsCmplt marker,
+        // round-trip through a real file (not just a MemoryStream, to rule out stream-position
+        // artifacts) via Decode+FitListener - all four GetWktStepNameAsString() calls return
+        // null-byte garbage instead of the encoded names. Giving the marker step a name of its
+        // own (unused by FitWorkoutParser, which never reads a repeat marker's Label) avoids
+        // triggering it, so we do that here purely to keep this test's Label assertions
+        // meaningful. See the FitWorkoutParser.ResolveStep Label comment and the final task
+        // report for the full write-up; this is flagged as an unverified-in-the-wild SDK gap.
+        step.SetWktStepName("(repeat)");
         return step;
     }
 

@@ -272,8 +272,54 @@ Phase 1):
 
 **Fundstellen:** `phase0-spike/` (nicht Teil der C#-Produktionspipeline, Wegwerf-Code).
 
+## 6.2 Phase 1 — Status (durchgeführt)
+
+C#-Lösung unter `src/` (TrainingRoutePlanner.slnx, .NET 10): Domain, PowerModel, OsmCorridors,
+FitParsing, RouteEngine, Api, Tests. **36/36 Tests grün, 0 Build-Warnungen.**
+
+- **Domain**: Nutzerprofil, Trainingszonen/-schritte, `ZoneResolver` (Zone/％FTP/absolute Watt →
+  Zielleistung + Score-Schwelle), `Corridor`/`ICorridorIndex`, `RouteRequest`/`RouteResult`.
+- **PowerModel**: Watt→Speed-Löser (Newton-Verfahren) nach Abschnitt 3.3, 8 Tests.
+- **OsmCorridors**: 1:1-Port des validierten Python-Spikes nach C#/OsmSharp. Auf dem echten
+  60-km-Extrakt liefert der Port **exakt dieselben Korridor-Zahlen** wie der Python-Spike
+  (Abschnitt 6.1) — starke Bestätigung, dass der Port korrekt ist. 15 Tests gegen handgebaute
+  synthetische Graphen (kein Test gegen die echte PBF-Datei, zu langsam für eine Testsuite).
+- **FitParsing**: FIT-Workout-Parser auf Basis des offiziellen `Garmin.FIT.Sdk`. Tests nutzen die
+  SDK-eigene Encode-API, um Workout-Dateien selbst zu bauen (kein externes Sample-File nötig). 6
+  Tests, inkl. Wiederholungs-Entrollung, %FTP-Zielwert-Dekodierung, Fallbacks für Nicht-Leistungs-
+  bzw. Open-Dauer-Schritte. **Bekannte Lücke:** ein SDK-Bug (Garmin.FIT.Sdk 21.214.0) korrumpiert
+  `wkt_step_name` für alle Schritte einer Datei, sobald ein Schritt (typischerweise der
+  Wiederholungs-Marker) keinen Namen setzt — betrifft nur die Anzeige-Labels, nicht Dauer/Leistung/
+  Score. Nicht selbst behebbar (liegt in der Drittanbieter-SDK), als Kommentar an der Lesestelle
+  dokumentiert.
+- **RouteEngine**: `GraphHopperClient` (round_trip + Multi-Waypoint) und
+  `RouteConstructionService` (Korridor-Splicing + Eskalationskette aus 4.2/4.3), 8 Tests mit
+  Fakes für GraphHopper/CorridorIndex.
+- **Api**: Minimaler Endpoint `POST /route` (multipart: FIT-Datei + Profil-Felder) verdrahtet alle
+  Module zusammen.
+
+**Bewusste Vereinfachungen (noch nicht umgesetzt, siehe Abschnitt 7):**
+- Distanzschätzung nutzt nur die Flach-Annahme aus 3.3 — die höhenprofil-iterative Verfeinerung
+  (Bisektion auf die round_trip-Distanz) fehlt noch.
+- Anfahrt-Budget-Absorption aus 4.4 (ruhige Blöcke als Anfahrt-Budget nutzen) ist noch nicht aktiv
+  — Anfahrt erscheint nur als Warnung, wird nicht aktiv in die Planung eingerechnet.
+- Korridor-Suche ist ein linearer Scan mit Bounding-Box-Vorfilter (kein Spatial Index) — für die
+  MVP-Korridoranzahlen ausreichend, bei viel größeren Regionen ggf. zu optimieren.
+
+**End-to-End-Rauchtest (manuell, mit echtem GraphHopper + echtem 60-km-Extrakt):** Ein
+FIT-Workout (20 min Grundlage + 3×[3 min Work, 2 min Recovery]) wurde über `POST /route`
+eingereicht und lieferte eine vollständige 27,5-km-Route mit 572 Geometriepunkten — inklusive
+genau der erwarteten Transparenz-Warnungen (Korridor-Fallback ausgelöst, Anfahrt-Budget
+überschritten). Bestätigt, dass die komplette Kette (FIT-Import → Leistungsmodell →
+Korridor-Suche → GraphHopper → Fallback-Eskalation) end-to-end funktioniert.
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte, die
   in Phase 0/3 anhand echter Daten getunt werden müssen)
-- Konkrete Wahl der FIT-Parser-Library für C#
+- Höhenprofil-iterative Distanzverfeinerung (siehe 6.2)
+- Aktive Anfahrt-Budget-Absorption statt reiner Warnung (siehe 4.4/6.2)
+- Spatial Index für die Korridorsuche, falls Regionsgröße/Anfragevolumen den linearen Scan zum
+  Flaschenhals machen
+- Garmin.FIT.Sdk 21.214.0 `wkt_step_name`-Dekodierfehler bei gemischten benannten/unbenannten
+  Schritten (siehe 6.2) - betrifft nur Labels, nicht die eigentliche Routenplanung
