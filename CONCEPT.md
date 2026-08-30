@@ -230,6 +230,11 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
   aufbereitet)
 - Nutzer können Segmente selbst bewerten/sperren (z. B. "diese Straße meiden" dauerhaft im Profil
   hinterlegen, unabhängig vom automatischen Score aus 3.4)
+- Straßenauslastung/Verkehr zur geplanten Trainingsuhrzeit in die Streckenbewertung einbeziehen
+  (Nutzer gibt an, wann trainiert werden soll; stark befahrene Straßen zu der Uhrzeit werden
+  gemieden). OSM selbst führt keine Verkehrsvolumen-/Stauzeitdaten — bräuchte eine externe
+  Verkehrsdaten-API (z. B. TomTom Traffic, HERE Traffic; meist kostenpflichtig/kontingentiert)
+  oder ersatzweise eine grobe Heuristik über Straßenklasse + Tageszeit ohne Echtzeitdaten
 - TCX-Export mit typisierten `<CoursePoint>`-Elementen (z. B. "Segment Start"/"Segment End" statt
   generischer Icons) als kleine Verbesserung zu den bereits vorhandenen benannten GPX-Wegpunkten
   aus Abschnitt 6.5 — reine Icon-/Kategorisierungs-Verbesserung, kein neues Verhalten
