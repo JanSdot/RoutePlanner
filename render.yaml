@@ -44,6 +44,14 @@ services:
           property: hostport
       - key: Cors__AllowedOrigin
         value: https://trainingrouteplanner-frontend.onrender.com
+      # Verhindert "IOException: configured user limit (128) on inotify instances reached"
+      # beim Start: Renders Container-Sandbox erlaubt nur sehr wenige inotify-Watches, und
+      # ASP.NET Core legt sonst per FileSystemWatcher automatisch einen pro appsettings*.json
+      # an, um sie zur Laufzeit neu einzulesen. Das brauchen wir hier nie (Config aendert sich
+      # nur per Redeploy), also schalten wir es ab - muss als DOTNET_-Env-Var gesetzt werden,
+      # da CreateBuilder sie schon beim eigenen Bootstrap ausliest, bevor eigener Code laeuft.
+      - key: DOTNET_hostBuilder__reloadConfigOnChange
+        value: "false"
 
   - type: web
     name: trainingrouteplanner-frontend
