@@ -23,7 +23,7 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
     {
         var url = $"/route?point={Fmt(start)}&profile={profile}&algorithm=round_trip" +
                    $"&round_trip.distance={distanceMeters.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)}" +
-                   $"&round_trip.seed={seed}&points_encoded=false";
+                   $"&round_trip.seed={seed}&points_encoded=false&elevation=true";
         return await GetRouteAsync(url, ct);
     }
 
@@ -33,7 +33,7 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
             throw new ArgumentException("At least start and end waypoint required.", nameof(waypoints));
 
         var pointsQuery = string.Join("&", waypoints.Select(p => $"point={Fmt(p)}"));
-        var url = $"/route?{pointsQuery}&profile={profile}&points_encoded=false";
+        var url = $"/route?{pointsQuery}&profile={profile}&points_encoded=false&elevation=true";
         return await GetRouteAsync(url, ct);
     }
 
@@ -50,7 +50,7 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
 
         var path = response.Paths[0];
         var geometry = path.Points.Coordinates
-            .Select(c => new GeoPoint(c[1], c[0]))
+            .Select(c => new GeoPoint(c[1], c[0], c.Length > 2 ? c[2] : null))
             .ToList();
 
         return new GraphHopperRoute(path.Distance, TimeSpan.FromMilliseconds(path.Time), geometry);

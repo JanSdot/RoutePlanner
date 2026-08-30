@@ -3,13 +3,10 @@ using TrainingRoutePlanner.PowerModel;
 
 namespace TrainingRoutePlanner.RouteEngine;
 
-/// <summary>Setzt den Kernalgorithmus aus CONCEPT.md Abschnitt 4.2 (Korridor-Splicing) und
-/// 4.3 (Fallback-Eskalation) um. Bewusste Vereinfachungen fuer Phase 1 (siehe auch CONCEPT.md
-/// Abschnitt 7): Distanzschaetzung nutzt nur die Flach-Annahme aus 3.3, die hoehenprofil-
-/// iterative Verfeinerung (Bisektion auf die angefragte round_trip-Distanz) ist noch nicht
-/// implementiert. Die Anfahrt-Budget-Absorption aus 4.4 (ruhige Bloecke als Anfahrt-Budget
-/// nutzen) ist ebenfalls noch nicht aktiv - Anfahrt wird hier nur als Warnung sichtbar, nicht
-/// aktiv in die Routenplanung eingerechnet.</summary>
+/// <summary>Setzt den Kernalgorithmus aus CONCEPT.md Abschnitt 4.2 (Korridor-Splicing), 4.3
+/// (Fallback-Eskalation) und 4.4 (Anfahrt-Budget) sowie die hoehenprofil-iterative
+/// Distanzverfeinerung aus 3.3 um. Verbleibende bewusste Vereinfachung (siehe Abschnitt 7):
+/// Korridorsuche ist ein linearer Scan ohne Spatial Index.</summary>
 public sealed class RouteConstructionService(
     IGraphHopperClient graphHopper,
     ICorridorIndex corridorIndex,
@@ -25,33 +22,38 @@ public sealed class RouteConstructionService(
     // dedizierten Korridor brauchen (EB/SB/VO2max/Sprint) - siehe ZoneBands in Domain.
     private const double DedicatedCorridorScoreCutoff = 5.0;
 
+    // Hoehenprofil-iterative Distanzverfeinerung, siehe CONCEPT.md 3.3: mehr Iterationen
+    // bringen abnehmenden Ertrag gegen zusaetzliche GraphHopper-Anfragen, daher gedeckelt.
+    private const int MaxDistanceRefinementIterations = 3;
+    private const double DistanceRefinementToleranceFraction = 0.05;
+    private const double GradientSampleWindowMeters = 400;
+
     public async Task<RouteResult> BuildRouteAsync(RouteRequest request, CancellationToken ct = default)
     {
         var warnings = new List<RouteWarning>();
+        var maxApproachRadiusMeters = ComputeMaxApproachRadiusMeters(request);
 
-        var stepEstimates = request.Plan.Steps
-            .Select(step => new StepEstimate(step, EstimateFlatDistance(step, request.Rider)))
-            .ToList();
-        var totalFlatDistance = stepEstimates.Sum(s => s.FlatDistanceMeters);
-
-        var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalFlatDistance, RoundTripSeed, ct);
+        var (roughLoop, stepDistances) = await RefineRoughLoopAsync(request, ct);
         var roughLoopLength = PolylineMath.TotalLengthMeters(roughLoop.Geometry);
+        var totalDistance = stepDistances.Sum();
 
         var waypoints = new List<GeoPoint> { request.StartPoint };
         var reuseCache = new Dictionary<(double PowerBucket, double ScoreBucket), Corridor>();
         var cumulativeDistance = 0.0;
 
-        foreach (var estimate in stepEstimates)
+        for (var i = 0; i < request.Plan.Steps.Count; i++)
         {
-            var step = estimate.Step;
-            var stepStartFraction = totalFlatDistance <= 0 ? 0 : cumulativeDistance / totalFlatDistance;
-            cumulativeDistance += estimate.FlatDistanceMeters;
+            var step = request.Plan.Steps[i];
+            var stepDistance = stepDistances[i];
+            var stepStartFraction = totalDistance <= 0 ? 0 : cumulativeDistance / totalDistance;
+            cumulativeDistance += stepDistance;
 
             if (step.MaxDisruptionScore > DedicatedCorridorScoreCutoff)
                 continue; // ruhiger Block, laeuft ueber die normale Verbindungsstrecke
 
             var targetPoint = PolylineMath.PointAtDistance(roughLoop.Geometry, stepStartFraction * roughLoopLength);
-            var corridor = FindCorridorWithFallback(step, estimate.FlatDistanceMeters, targetPoint, request.SegmentReuse, reuseCache, warnings);
+            var corridor = FindCorridorWithFallback(
+                step, stepDistance, targetPoint, request.SegmentReuse, reuseCache, maxApproachRadiusMeters, warnings);
             if (corridor is not null)
             {
                 waypoints.Add(corridor.Start);
@@ -75,10 +77,61 @@ public sealed class RouteConstructionService(
         };
     }
 
-    private double EstimateFlatDistance(TrainingStep step, RiderProfile profile)
+    /// <summary>Fragt round_trip an, verfeinert die pro-Schritt-Distanzen anhand des
+    /// tatsaechlichen Hoehenprofils der Antwort (statt der reinen Flach-Annahme aus 3.3) und
+    /// fragt bei signifikanter Gesamtabweichung erneut an - der "iterative Prozess" aus 3.3.
+    /// Die Position jedes Schritts entlang der Schleife wird pro Iteration anhand der
+    /// Distanzen der VORHERIGEN Iteration bestimmt (nicht der gerade neu berechneten) - sonst
+    /// haengt die Positionsbestimmung von einem Wert ab, den sie selbst gerade erst liefert.</summary>
+    private async Task<(GraphHopperRoute RoughLoop, double[] StepDistances)> RefineRoughLoopAsync(RouteRequest request, CancellationToken ct)
     {
-        var speedMps = powerModel.SolveSpeedMps(step.TargetPowerWatts, profile);
-        return speedMps * step.Duration.TotalSeconds;
+        var steps = request.Plan.Steps;
+        var stepDistances = steps.Select(s => EstimateDistance(s, request.Rider, gradient: 0.0)).ToArray();
+        var totalDistance = stepDistances.Sum();
+
+        var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, RoundTripSeed, ct);
+
+        for (var iteration = 0; iteration < MaxDistanceRefinementIterations; iteration++)
+        {
+            var roughLoopLength = PolylineMath.TotalLengthMeters(roughLoop.Geometry);
+            var refined = new double[steps.Count];
+            var cumulative = 0.0;
+
+            for (var i = 0; i < steps.Count; i++)
+            {
+                var fraction = totalDistance <= 0 ? 0 : cumulative / totalDistance;
+                var gradient = PolylineMath.AverageGradient(roughLoop.Geometry, fraction * roughLoopLength, GradientSampleWindowMeters);
+                refined[i] = EstimateDistance(steps[i], request.Rider, gradient);
+                cumulative += stepDistances[i];
+            }
+
+            var refinedTotal = refined.Sum();
+            var relativeChange = totalDistance <= 0 ? 0 : Math.Abs(refinedTotal - totalDistance) / totalDistance;
+
+            stepDistances = refined;
+            totalDistance = refinedTotal;
+
+            if (relativeChange < DistanceRefinementToleranceFraction)
+                break;
+
+            roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, RoundTripSeed, ct);
+        }
+
+        return (roughLoop, stepDistances);
+    }
+
+    private double EstimateDistance(TrainingStep step, RiderProfile profile, double gradient) =>
+        powerModel.SolveSpeedMps(step.TargetPowerWatts, profile, gradient) * step.Duration.TotalSeconds;
+
+    /// <summary>Wandelt CONCEPT.md 4.4's Anfahrt-Zeitbudget in einen Distanz-Deckel fuer die
+    /// Korridorsuche um, angenommen bei GA1-Tempo (dem ruhigsten Zonentyp - die Anfahrt selbst
+    /// ist per Definition ein ruhiger Blockanteil). Budget gilt fuer Hin- UND Rueckweg
+    /// zusammen, daher Division durch 2 fuer eine Richtung.</summary>
+    private double ComputeMaxApproachRadiusMeters(RouteRequest request)
+    {
+        var quietStep = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(1), request.Rider);
+        var quietSpeedMps = powerModel.SolveSpeedMps(quietStep.TargetPowerWatts, request.Rider);
+        return quietSpeedMps * (request.MaxApproachMinutes * 60.0 / 2.0);
     }
 
     private Corridor? FindCorridorWithFallback(
@@ -87,16 +140,18 @@ public sealed class RouteConstructionService(
         GeoPoint targetPoint,
         SegmentReusePreference reusePreference,
         Dictionary<(double, double), Corridor> reuseCache,
+        double maxSearchRadiusMeters,
         List<RouteWarning> warnings)
     {
         var cacheKey = (Math.Round(step.TargetPowerWatts / 10) * 10, step.MaxDisruptionScore);
         if (reusePreference == SegmentReusePreference.PreferReuse && reuseCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
-        var searchRadius = InitialSearchRadiusMeters;
+        var searchRadius = Math.Min(InitialSearchRadiusMeters, maxSearchRadiusMeters);
         var maxScore = step.MaxDisruptionScore;
 
-        // Eskalationskette aus CONCEPT.md 4.3: (1) strikt, (2) automatisch lockern.
+        // Eskalationskette aus CONCEPT.md 4.3: (1) strikt, (2) automatisch lockern - aber nie
+        // ueber das Anfahrt-Budget aus 4.4 hinaus (maxSearchRadiusMeters).
         for (var attempt = 0; attempt < MaxFallbackAttempts; attempt++)
         {
             var found = corridorIndex.TryFindCorridor(targetPoint, requiredLengthMeters, maxScore, searchRadius);
@@ -113,7 +168,9 @@ public sealed class RouteConstructionService(
                 }
                 return CacheIfPreferred(found, cacheKey, reusePreference, reuseCache);
             }
-            searchRadius *= SearchRadiusGrowthFactor;
+            if (searchRadius >= maxSearchRadiusMeters)
+                break;
+            searchRadius = Math.Min(searchRadius * SearchRadiusGrowthFactor, maxSearchRadiusMeters);
             maxScore *= ScoreRelaxationFactor;
         }
 
@@ -164,6 +221,4 @@ public sealed class RouteConstructionService(
             });
         }
     }
-
-    private sealed record StepEstimate(TrainingStep Step, double FlatDistanceMeters);
 }

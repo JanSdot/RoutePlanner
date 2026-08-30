@@ -19,16 +19,22 @@ public class RouteConstructionServiceTests
     private sealed class FakeGraphHopperClient : IGraphHopperClient
     {
         public List<IReadOnlyList<GeoPoint>> WaypointCalls { get; } = [];
+        public List<double> RoundTripDistanceRequests { get; } = [];
         public double RoundTripDistanceMeters { get; set; } = 20_000;
 
         // Default = 0, damit Tests, die die Anfahrt-Budget-Pruefung nicht betreffen, nicht
         // versehentlich eine Warnung ausloesen (extra Zeit wird dann negativ, nie > Budget).
         public TimeSpan FinalRouteTime { get; set; } = TimeSpan.Zero;
 
+        // Erlaubt Tests, ein Hoehenprofil in Abhaengigkeit von der angefragten Distanz zu
+        // simulieren (fuer die Refinement-Tests) - Default: flache Platzhalter-Schleife.
+        public Func<double, IReadOnlyList<GeoPoint>>? GeometryFactory { get; set; }
+
         public Task<GraphHopperRoute> RoundTripAsync(GeoPoint start, double distanceMeters, int seed, CancellationToken ct = default)
         {
-            // Einfache quadratische Schleife als Platzhalter-Geometrie fuer Tests.
-            var geometry = new List<GeoPoint>
+            RoundTripDistanceRequests.Add(distanceMeters);
+
+            var geometry = GeometryFactory?.Invoke(distanceMeters) ?? new List<GeoPoint>
             {
                 start,
                 new(start.Lat + 0.05, start.Lon),
@@ -202,5 +208,57 @@ public class RouteConstructionServiceTests
         });
 
         Assert.Contains(result.Warnings, w => w.Message.Contains("länger als der reine Trainingsplan"));
+    }
+
+    [Fact]
+    public async Task UphillGradient_ReducesDistanceEstimate_AndTriggersRefinementRequest()
+    {
+        var ghClient = new FakeGraphHopperClient
+        {
+            // Konstante 5% Steigung ueber die gesamte angefragte Distanz - unabhaengig von
+            // der Distanz reproduzierbar, damit der Test deterministisch bleibt.
+            GeometryFactory = distanceMeters => new List<GeoPoint>
+            {
+                new(Start.Lat, Start.Lon, 0),
+                new(Start.Lat + 0.05, Start.Lon + 0.05, distanceMeters * 0.05),
+            },
+        };
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
+        await service.BuildRouteAsync(MakeRequest([step]));
+
+        Assert.True(ghClient.RoundTripDistanceRequests.Count >= 2,
+            "Bei signifikanter Steigung sollte eine verfeinerte Zweitanfrage erfolgen");
+        Assert.True(ghClient.RoundTripDistanceRequests[1] < ghClient.RoundTripDistanceRequests[0],
+            "Bergauf sollte die verfeinerte Distanz kleiner sein als die Flach-Schaetzung (weniger Weg in gleicher Zeit)");
+    }
+
+    [Fact]
+    public async Task ApproachBudget_CapsCorridorSearchRadius()
+    {
+        var corridors = new FakeCorridorIndex { Responder = _ => null };
+        var powerModel = new PowerSpeedModel();
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, powerModel);
+
+        var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
+        var request = new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            MaxApproachMinutes = 1, // sehr eng, damit der Deckel unterhalb der Standard-Suchradien liegt
+        };
+
+        await service.BuildRouteAsync(request);
+
+        var quietStep = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(1), Rider);
+        var quietSpeedMps = powerModel.SolveSpeedMps(quietStep.TargetPowerWatts, Rider);
+        var expectedCap = quietSpeedMps * (1 * 60.0 / 2.0);
+
+        Assert.NotEmpty(corridors.Calls);
+        Assert.All(corridors.Calls, call => Assert.True(call.Radius <= expectedCap + 0.01,
+            $"Suchradius {call.Radius} überschreitet den Anfahrt-Budget-Deckel {expectedCap}"));
     }
 }

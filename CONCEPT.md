@@ -298,11 +298,25 @@ FitParsing, RouteEngine, Api, Tests. **36/36 Tests grün, 0 Build-Warnungen.**
 - **Api**: Minimaler Endpoint `POST /route` (multipart: FIT-Datei + Profil-Felder) verdrahtet alle
   Module zusammen.
 
-**Bewusste Vereinfachungen (noch nicht umgesetzt, siehe Abschnitt 7):**
-- Distanzschätzung nutzt nur die Flach-Annahme aus 3.3 — die höhenprofil-iterative Verfeinerung
-  (Bisektion auf die round_trip-Distanz) fehlt noch.
-- Anfahrt-Budget-Absorption aus 4.4 (ruhige Blöcke als Anfahrt-Budget nutzen) ist noch nicht aktiv
-  — Anfahrt erscheint nur als Warnung, wird nicht aktiv in die Planung eingerechnet.
+**Nacharbeit nach Phase 1 (durchgeführt):**
+- **Höhenprofil-iterative Distanzverfeinerung** (3.3): `RouteConstructionService` fragt jetzt
+  `round_trip` an, misst die tatsächliche Steigung entlang der Antwort an der ungefähren
+  Position jedes Trainingsschritts (400 m Fenster) und berechnet die Zieldistanz mit dem
+  höhenprofil-adjustierten Leistungsmodell neu. Bei >5 % Abweichung wird `round_trip` mit der
+  verfeinerten Distanz erneut angefragt (max. 3 Iterationen). Dabei einen echten Bug gefunden:
+  GraphHopper liefert Elevation nur mit explizitem Query-Parameter `elevation=true`, obwohl der
+  Server-seitige Elevation-Support aktiviert war — ohne diesen Parameter bleiben alle
+  Höhenwerte `null`, und die Verfeinerung hätte still nie gegriffen. Behoben in
+  `GraphHopperClient`.
+- **Aktive Anfahrt-Budget-Nutzung** (4.4): `RouteRequest.MaxApproachMinutes` wurde vorher gar
+  nicht verwendet (totes Feld). Jetzt wird daraus (bei GA1-Tempo, Budget für Hin+Rück zusammen)
+  ein maximaler Korridor-Suchradius abgeleitet, den die Fallback-Eskalation aus 4.3 nicht mehr
+  überschreitet — statt einer festen Anzahl Lockerungsversuche ist die Eskalation jetzt an das
+  tatsächliche Zeitbudget des Nutzers gekoppelt.
+- Beides end-to-end gegen echten GraphHopper + echten Datenextrakt verifiziert (Elevation-Werte
+  korrekt im Antwort-JSON, 38/38 Tests grün inkl. 2 neuer Tests für die beiden Verhalten).
+
+**Verbleibende bewusste Vereinfachung:**
 - Korridor-Suche ist ein linearer Scan mit Bounding-Box-Vorfilter (kein Spatial Index) — für die
   MVP-Korridoranzahlen ausreichend, bei viel größeren Regionen ggf. zu optimieren.
 
@@ -315,11 +329,11 @@ Korridor-Suche → GraphHopper → Fallback-Eskalation) end-to-end funktioniert.
 
 ## 7. Offene Punkte
 
-- Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte, die
-  in Phase 0/3 anhand echter Daten getunt werden müssen)
-- Höhenprofil-iterative Distanzverfeinerung (siehe 6.2)
-- Aktive Anfahrt-Budget-Absorption statt reiner Warnung (siehe 4.4/6.2)
+- Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,
+  brauchen echte Trainingsfahrten zur Kalibrierung — explizit Teil von Phase 3, nicht vorher
+  lösbar)
 - Spatial Index für die Korridorsuche, falls Regionsgröße/Anfragevolumen den linearen Scan zum
-  Flaschenhals machen
+  Flaschenhals machen (Performance-Optimierung, aktuell kein akutes Problem)
 - Garmin.FIT.Sdk 21.214.0 `wkt_step_name`-Dekodierfehler bei gemischten benannten/unbenannten
-  Schritten (siehe 6.2) - betrifft nur Labels, nicht die eigentliche Routenplanung
+  Schritten (siehe 6.2) - liegt in der Drittanbieter-SDK, nicht selbst behebbar; betrifft nur
+  Anzeige-Labels, nicht die eigentliche Routenplanung
