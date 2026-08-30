@@ -235,6 +235,9 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 - Landstrassen mit niedrigerem Tempolimit bevorzugen, wenn der Untergrund gut ist (weniger/
   langsamerer Durchgangsverkehr auf ungeschuetzten Strecken) - vom Nutzer vorgeschlagen, noch
   nicht umgesetzt
+- Zwei Startpunkte fuer gemeinsames Training mehrerer Sportler - offene Design-Frage, ob ein
+  gemeinsamer Treffpunkt auf der Strecke berechnet wird (jeder faehrt von seinem Start dorthin,
+  dann gemeinsame Runde) oder beide einfach ihre eigene Anfahrt zur selben Rundstrecke bekommen
 - Integration von Baustellen (aktuelle Straßensperrungen/-einschränkungen in die Korridor-/
   Routenbewertung einbeziehen, z. B. über OSM `construction`-Tags oder externe Baustellen-Feeds)
 - Nutzer können Segmente selbst bewerten/sperren (z. B. "diese Straße meiden" dauerhaft im Profil
