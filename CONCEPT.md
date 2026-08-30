@@ -220,10 +220,7 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 ### Phase 4 — Später (nicht Teil des MVP)
 
 - **Mehrbenutzerfähigkeit/Auth/Vereine** (geplant, noch nicht umgesetzt) - Reihenfolge laut
-  Nutzer: (1) Nutzerkonten mit Login (Google + Microsoft OAuth, dazu klassische
-  E-Mail/Passwort-Registrierung als eigenes Subsystem - Passwort-Hashing, Reset-Flow etc.;
-  Apple Sign-In bewusst NICHT eingeplant, da es einen aktiven kostenpflichtigen Apple Developer
-  Account voraussetzt, den der Nutzer nicht hat), (2) Vereine mit Mitgliedschaft und Rollen
+  Nutzer: (1) Nutzerkonten mit Login, (2) Vereine mit Mitgliedschaft und Rollen
   (normales Mitglied vs. "Verantwortlicher"), als Grundlage für ein mögliches späteres
   Preismodell, (3) Migration der Sperr-Bereiche (6.18) von rein Frontend-Request-State zu
   persistierten, pro-Nutzer ODER pro-Verein geltenden Ressourcen - eine Verein-weite Sperrung
@@ -232,6 +229,16 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
   aktuell KEINERLEI Datenbank/Persistenz (alles zustandslos pro Anfrage, PBF-Daten einmalig
   beim Start ins RAM geladen) - das muesste als Erstes eingefuehrt werden (z. B. verwaltetes
   Postgres bei Render).
+  **Auth-Entscheidung (2026-08-30):** ASP.NET Core Identity (selbst gehostet, in der
+  bestehenden API) plus die offiziellen Google- und Microsoft-OAuth-Pakete, dazu klassische
+  E-Mail/Passwort-Registrierung als eigenes Subsystem (Passwort-Hashing, Reset-Flow etc.).
+  Apple Sign-In bewusst NICHT eingeplant, da es einen aktiven kostenpflichtigen Apple Developer
+  Account voraussetzt. Diskutierte Alternativen: ein selbst gehostetes Keycloak (passt gut zum
+  "kostenlos/selbst gehostet"-Muster des Projekts, aber ein weiterer zu betreibender Dienst mit
+  eigener DB/eigenem Deployment) und ein SaaS-Anbieter wie Auth0/Clerk (weniger Code, aber
+  wiederkehrende Kosten ab einer gewissen Nutzerzahl UND nimmt das Vereins-Rollenmodell ohnehin
+  nicht ab). Keycloak bleibt bewusst als spaetere Option im Hinterkopf, falls der Funktionsumfang
+  (mehr Provider, MFA, mehrere Client-Apps mit gemeinsamem Login) den Mehraufwand rechtfertigt.
 - A-nach-B-Routing (statt nur Rundkurs)
 - **Windmodellierung** (geplant, noch nicht umgesetzt) - Scope bewusst auf die Zeitschätzung
   begrenzt, die Streckenführung selbst bleibt unverändert. Datenquelle: Open-Meteo (kostenlos,
