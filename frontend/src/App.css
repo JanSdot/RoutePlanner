@@ -78,6 +78,41 @@
   cursor: not-allowed;
 }
 
+.auth-panel p {
+  font-size: 0.85rem;
+  margin: 0 0 0.5rem;
+}
+
+.auth-panel-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.auth-panel-actions button {
+  flex: 1;
+  padding: 0.4rem;
+  font-size: 0.85rem;
+  border: 1px solid #cbd5e1;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.auth-panel-actions button:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.auth-panel button:not(.auth-panel-actions button) {
+  width: 100%;
+  padding: 0.4rem;
+  font-size: 0.85rem;
+  border: 1px solid #cbd5e1;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
 .error {
   color: #dc2626;
   font-size: 0.85rem;

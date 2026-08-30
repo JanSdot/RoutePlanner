@@ -1,4 +1,4 @@
-import type { Junction, RouteFormInput, RouteResult, WorkoutBlockSpec } from "./types";
+import type { AuthResponse, Junction, RouteFormInput, RouteResult, WorkoutBlockSpec } from "./types";
 
 // Zur Build-Zeit über Vite gesetzt (siehe .env.production / Render-Umgebungsvariable
 // VITE_API_BASE_URL) - lokal ohne .env-Datei Fallback auf den lokalen API-Port.
@@ -70,6 +70,45 @@ export async function requestJunctions(): Promise<Junction[]> {
     throw new Error(text || `Ampeln/Stoppschilder-Abruf fehlgeschlagen (HTTP ${response.status})`);
   }
   return (await response.json()) as Junction[];
+}
+
+// Registrierungsfehler kommen von POST /auth/register als JSON-Array von Identity-
+// Fehlermeldungen zurueck (z.B. Passwortrichtlinie, "E-Mail bereits vergeben"), anders als die
+// uebrigen Endpunkte, die reinen Text liefern - daher eigene Fehlerbehandlung hier.
+export async function registerUser(email: string, password: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!response.ok) {
+    const errors = (await response.json().catch(() => null)) as string[] | null;
+    throw new Error(errors?.join(" ") || `Registrierung fehlgeschlagen (HTTP ${response.status})`);
+  }
+}
+
+export async function loginUser(email: string, password: string): Promise<AuthResponse> {
+  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!response.ok) {
+    throw new Error(response.status === 401 ? "E-Mail oder Passwort ist falsch." : `Login fehlgeschlagen (HTTP ${response.status})`);
+  }
+  return (await response.json()) as AuthResponse;
+}
+
+// Validiert ein gespeichertes Token gegen das Backend (z.B. beim Laden der App) und liefert die
+// zugehoerige E-Mail - null bei abgelaufenem/ungueltigem Token, statt eines Fehlers, da das der
+// normale Fall bei einem alten localStorage-Token ist, kein wirklicher Fehlerzustand.
+export async function fetchCurrentUser(token: string): Promise<string | null> {
+  const response = await fetch(`${API_BASE_URL}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) return null;
+  const data = (await response.json()) as { email: string };
+  return data.email;
 }
 
 export async function buildWorkoutFitFile(blocks: WorkoutBlockSpec[]): Promise<File> {

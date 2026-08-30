@@ -85,3 +85,9 @@ export interface WorkoutBlockSpec {
   repeatTimes?: number;
   repeatSteps?: WorkoutStepSpec[];
 }
+
+// Siehe POST /auth/login (Backend) - Token ist ein JWT, 30 Tage gueltig.
+export interface AuthResponse {
+  token: string;
+  email: string;
+}

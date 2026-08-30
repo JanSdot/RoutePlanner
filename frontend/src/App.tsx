@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MapView, colorForSegmentLabel } from "./components/MapView";
 import { WorkoutEditor } from "./components/WorkoutEditor";
-import { requestRoute, requestRouteGpx, buildWorkoutFitFile } from "./api";
+import { AuthPanel } from "./components/AuthPanel";
+import { requestRoute, requestRouteGpx, buildWorkoutFitFile, registerUser, loginUser, fetchCurrentUser } from "./api";
 import type { BlockedArea, GeoPoint, RouteResult, SegmentReusePreference, WorkoutBlockSpec } from "./types";
 import "./App.css";
+
+const AUTH_TOKEN_STORAGE_KEY = "wattloop_auth_token";
 
 function formatDotNetTimeSpan(value: string): string {
   const match = /^(\d+)\.(\d{2}):(\d{2}):(\d{2})|^(\d{2}):(\d{2}):(\d{2})/.exec(value);
@@ -66,6 +69,55 @@ export default function App() {
 
   function removeRequiredPoint(index: number) {
     setRequiredPoints((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  const [authEmail, setAuthEmail] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Ein gespeichertes Token ueberlebt einen Seiten-Reload nur, wenn es noch gueltig ist - beim
+  // Laden einmal gegen /auth/me pruefen statt blind zu vertrauen (kann z.B. abgelaufen sein).
+  useEffect(() => {
+    const storedToken = localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    if (!storedToken) return;
+    fetchCurrentUser(storedToken).then((email) => {
+      if (email) {
+        setAuthEmail(email);
+      } else {
+        localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+      }
+    });
+  }, []);
+
+  async function handleLogin(email: string, password: string) {
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      const result = await loginUser(email, password);
+      localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, result.token);
+      setAuthEmail(result.email);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleRegister(email: string, password: string) {
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      await registerUser(email, password);
+      await handleLogin(email, password);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+      setAuthLoading(false);
+    }
+  }
+
+  function handleLogout() {
+    localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    setAuthEmail(null);
   }
 
   const [showJunctions, setShowJunctions] = useState(false);
@@ -152,6 +204,14 @@ export default function App() {
         <h1>WattLoop</h1>
 
         <form onSubmit={handleSubmit}>
+          <AuthPanel
+            email={authEmail}
+            loading={authLoading}
+            error={authError}
+            onLogin={handleLogin}
+            onRegister={handleRegister}
+            onLogout={handleLogout}
+          />
           <label>
             Startpunkt
             <input
