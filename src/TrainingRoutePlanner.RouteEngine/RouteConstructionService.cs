@@ -39,6 +39,7 @@ public sealed class RouteConstructionService(
 
         var waypoints = new List<GeoPoint> { request.StartPoint };
         var reuseCache = new Dictionary<(double PowerBucket, double ScoreBucket), Corridor>();
+        var segments = new List<RouteSegment>();
         var cumulativeDistance = 0.0;
 
         for (var i = 0; i < request.Plan.Steps.Count; i++)
@@ -53,11 +54,15 @@ public sealed class RouteConstructionService(
 
             var targetPoint = PolylineMath.PointAtDistance(roughLoop.Geometry, stepStartFraction * roughLoopLength);
             var corridor = FindCorridorWithFallback(
-                step, stepDistance, targetPoint, request.SegmentReuse, reuseCache, maxApproachRadiusMeters, warnings);
+                step, stepDistance, targetPoint, request.SegmentReuse, request.AllowUTurns, reuseCache, maxApproachRadiusMeters, warnings);
             if (corridor is not null)
             {
                 waypoints.Add(corridor.Start);
                 waypoints.Add(corridor.End);
+                // Korridor-Geometrie direkt uebernehmen statt aus der finalen Route
+                // herauszuschneiden - GraphHopper folgt zwischen exakt diesen zwei Punkten
+                // ohnehin derselben Strecke, da wir sie ja genau deswegen gewaehlt haben.
+                segments.Add(new RouteSegment { Label = step.Label ?? "Intervall", Geometry = corridor.Geometry });
             }
         }
         waypoints.Add(request.StartPoint);
@@ -67,6 +72,8 @@ public sealed class RouteConstructionService(
             : roughLoop;
 
         CheckApproachBudget(request, finalRoute, warnings);
+        if (!request.AllowUTurns)
+            CheckForUTurns(finalRoute, warnings);
 
         return new RouteResult
         {
@@ -74,6 +81,7 @@ public sealed class RouteConstructionService(
             TotalDistanceMeters = finalRoute.DistanceMeters,
             EstimatedTotalTime = finalRoute.Time,
             Warnings = warnings,
+            Segments = segments,
         };
     }
 
@@ -139,12 +147,18 @@ public sealed class RouteConstructionService(
         double requiredLengthMeters,
         GeoPoint targetPoint,
         SegmentReusePreference reusePreference,
+        bool allowUTurns,
         Dictionary<(double, double), Corridor> reuseCache,
         double maxSearchRadiusMeters,
         List<RouteWarning> warnings)
     {
+        // Exaktes Wiederverwenden bedeutet: Route faehrt vom Korridorende direkt zurueck zum
+        // -anfang - ohne alternative Strecke ist das meist nur per Kehrtwende moeglich. Bei
+        // AllowUTurns=false daher lieber frisch suchen (naeher an "Streckenvielfalt"), auch
+        // wenn eigentlich "Gleicher Ort" gewuenscht ist.
+        var effectiveReuse = allowUTurns ? reusePreference : SegmentReusePreference.PreferVariety;
         var cacheKey = (Math.Round(step.TargetPowerWatts / 10) * 10, step.MaxDisruptionScore);
-        if (reusePreference == SegmentReusePreference.PreferReuse && reuseCache.TryGetValue(cacheKey, out var cached))
+        if (effectiveReuse == SegmentReusePreference.PreferReuse && reuseCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
         var searchRadius = Math.Min(InitialSearchRadiusMeters, maxSearchRadiusMeters);
@@ -166,7 +180,7 @@ public sealed class RouteConstructionService(
                         Location = targetPoint,
                     });
                 }
-                return CacheIfPreferred(found, cacheKey, reusePreference, reuseCache);
+                return CacheIfPreferred(found, cacheKey, effectiveReuse, reuseCache);
             }
             if (searchRadius >= maxSearchRadiusMeters)
                 break;
@@ -186,7 +200,7 @@ public sealed class RouteConstructionService(
                           "es wurde der bestmögliche verfügbare Korridor als Kompromiss verwendet.",
                 Location = targetPoint,
             });
-            return CacheIfPreferred(bestEffort, cacheKey, reusePreference, reuseCache);
+            return CacheIfPreferred(bestEffort, cacheKey, effectiveReuse, reuseCache);
         }
 
         warnings.Add(new RouteWarning
@@ -205,6 +219,23 @@ public sealed class RouteConstructionService(
         if (preference == SegmentReusePreference.PreferReuse)
             cache[cacheKey] = corridor;
         return corridor;
+    }
+
+    /// <summary>Erkennt abrupte Richtungswechsel in der finalen Route (Naeherung fuer
+    /// Kehrtwenden) und meldet sie transparent - kann eine Kehrtwende in duennen
+    /// Strassennetzen (z.B. echte Sackgassen) nicht immer verhindern, siehe RouteRequest.
+    /// AllowUTurns.</summary>
+    private static void CheckForUTurns(GraphHopperRoute finalRoute, List<RouteWarning> warnings)
+    {
+        foreach (var location in PolylineMath.DetectSharpReversals(finalRoute.Geometry))
+        {
+            warnings.Add(new RouteWarning
+            {
+                Message = "Die Route enthält an dieser Stelle vermutlich eine Kehrtwende - " +
+                          "im aktuellen Straßennetz war keine Alternative ohne Umkehren auffindbar.",
+                Location = location,
+            });
+        }
     }
 
     private static void CheckApproachBudget(RouteRequest request, GraphHopperRoute finalRoute, List<RouteWarning> warnings)

@@ -12,6 +12,7 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   data.append("startLon", String(input.startLon));
   data.append("maxApproachMinutes", String(input.maxApproachMinutes));
   data.append("segmentReuse", input.segmentReuse);
+  data.append("allowUTurns", String(input.allowUTurns));
   data.append("format", format);
   return data;
 }

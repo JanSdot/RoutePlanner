@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import { Map as MapLibreMap, Marker, LngLatBounds } from "maplibre-gl";
-import type { StyleSpecification, GeoJSONSource } from "maplibre-gl";
+import type { StyleSpecification, GeoJSONSource, ExpressionSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { GeoPoint } from "../types";
+import type { GeoPoint, RouteSegment } from "../types";
 
 const OSM_RASTER_STYLE: StyleSpecification = {
   version: 8,
@@ -17,13 +17,34 @@ const OSM_RASTER_STYLE: StyleSpecification = {
   layers: [{ id: "osm", type: "raster", source: "osm" }],
 };
 
+// Feste Palette statt zufaelliger Farben, damit derselbe Label (z.B. "Work") bei jeder
+// Neuberechnung dieselbe Farbe bekommt.
+export const SEGMENT_COLOR_PALETTE = ["#ea580c", "#7c3aed", "#0d9488", "#db2777", "#65a30d", "#0891b2"];
+export const SEGMENT_FALLBACK_COLOR = "#f59e0b";
+
+export function colorForSegmentLabel(label: string, allLabels: string[]): string {
+  const uniqueLabels = [...new Set(allLabels)];
+  const index = uniqueLabels.indexOf(label);
+  return index === -1 ? SEGMENT_FALLBACK_COLOR : SEGMENT_COLOR_PALETTE[index % SEGMENT_COLOR_PALETTE.length];
+}
+
+function segmentColorExpression(labels: string[]): ExpressionSpecification | string {
+  const uniqueLabels = [...new Set(labels)];
+  // MapLibre's "match" requires at least one case/output pair - with zero labels (e.g. before
+  // any route is computed) that produces an invalid expression, so fall back to a plain color.
+  if (uniqueLabels.length === 0) return SEGMENT_FALLBACK_COLOR;
+  const stops = uniqueLabels.flatMap((label, i) => [label, SEGMENT_COLOR_PALETTE[i % SEGMENT_COLOR_PALETTE.length]]);
+  return ["match", ["get", "label"], ...stops, SEGMENT_FALLBACK_COLOR] as unknown as ExpressionSpecification;
+}
+
 interface MapViewProps {
   startPoint: GeoPoint | null;
   onStartPointChange: (point: GeoPoint) => void;
   routeGeometry: GeoPoint[] | null;
+  routeSegments: RouteSegment[] | null;
 }
 
-export function MapView({ startPoint, onStartPointChange, routeGeometry }: MapViewProps) {
+export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSegments }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const startMarkerRef = useRef<Marker | null>(null);
@@ -88,35 +109,62 @@ export function MapView({ startPoint, onStartPointChange, routeGeometry }: MapVi
     if (!map) return;
 
     const applyRoute = () => {
-      const existingSource = map.getSource("route") as GeoJSONSource | undefined;
-      if (!routeGeometry || routeGeometry.length === 0) {
-        if (existingSource) {
-          existingSource.setData({ type: "FeatureCollection", features: [] });
-        }
-        return;
-      }
-
-      const geojson: GeoJSON.Feature<GeoJSON.LineString> = {
-        type: "Feature",
-        properties: {},
-        geometry: {
-          type: "LineString",
-          coordinates: routeGeometry.map((p) => [p.lon, p.lat]),
-        },
+      // Basis-Route (blau, duenn) - immer die volle Strecke, darauf liegen die
+      // hervorgehobenen Intervall-Segmente aus dem Trainingsplan.
+      const existingRouteSource = map.getSource("route") as GeoJSONSource | undefined;
+      const routeGeojson: GeoJSON.FeatureCollection<GeoJSON.LineString> = {
+        type: "FeatureCollection",
+        features: routeGeometry && routeGeometry.length > 0
+          ? [{
+              type: "Feature",
+              properties: {},
+              geometry: { type: "LineString", coordinates: routeGeometry.map((p) => [p.lon, p.lat]) },
+            }]
+          : [],
       };
 
-      if (existingSource) {
-        existingSource.setData(geojson);
+      if (existingRouteSource) {
+        existingRouteSource.setData(routeGeojson);
       } else {
-        map.addSource("route", { type: "geojson", data: geojson });
+        map.addSource("route", { type: "geojson", data: routeGeojson });
         map.addLayer({
           id: "route-line",
           type: "line",
           source: "route",
-          paint: { "line-color": "#dc2626", "line-width": 4 },
+          paint: { "line-color": "#2563eb", "line-width": 3 },
         });
       }
 
+      const segments = routeSegments ?? [];
+      const segmentsGeojson: GeoJSON.FeatureCollection<GeoJSON.LineString> = {
+        type: "FeatureCollection",
+        features: segments.map((s) => ({
+          type: "Feature",
+          properties: { label: s.label },
+          geometry: { type: "LineString", coordinates: s.geometry.map((p) => [p.lon, p.lat]) },
+        })),
+      };
+      const existingSegmentsSource = map.getSource("route-segments") as GeoJSONSource | undefined;
+      if (existingSegmentsSource) {
+        existingSegmentsSource.setData(segmentsGeojson);
+      } else {
+        map.addSource("route-segments", { type: "geojson", data: segmentsGeojson });
+        map.addLayer({
+          id: "route-segments-line",
+          type: "line",
+          source: "route-segments",
+          paint: { "line-color": SEGMENT_FALLBACK_COLOR, "line-width": 6 },
+        });
+      }
+      if (map.getLayer("route-segments-line")) {
+        map.setPaintProperty(
+          "route-segments-line",
+          "line-color",
+          segmentColorExpression(segments.map((s) => s.label)),
+        );
+      }
+
+      if (!routeGeometry || routeGeometry.length === 0) return;
       const bounds = routeGeometry.reduce(
         (b, p) => b.extend([p.lon, p.lat]),
         new LngLatBounds([routeGeometry[0].lon, routeGeometry[0].lat], [routeGeometry[0].lon, routeGeometry[0].lat]),
@@ -129,7 +177,7 @@ export function MapView({ startPoint, onStartPointChange, routeGeometry }: MapVi
     } else {
       map.once("load", applyRoute);
     }
-  }, [routeGeometry]);
+  }, [routeGeometry, routeSegments]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MapView } from "./components/MapView";
+import { MapView, colorForSegmentLabel } from "./components/MapView";
 import { requestRoute, requestRouteGpx } from "./api";
 import type { GeoPoint, RouteResult, SegmentReusePreference } from "./types";
 import "./App.css";
@@ -35,6 +35,7 @@ export default function App() {
   const [sprintAvgWatts, setSprintAvgWatts] = useState(800);
   const [maxApproachMinutes, setMaxApproachMinutes] = useState(30);
   const [segmentReuse, setSegmentReuse] = useState<SegmentReusePreference>("PreferReuse");
+  const [allowUTurns, setAllowUTurns] = useState(true);
   const [fitFile, setFitFile] = useState<File | null>(null);
 
   const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
@@ -55,6 +56,7 @@ export default function App() {
         startLon: startPoint.lon,
         maxApproachMinutes,
         segmentReuse,
+        allowUTurns,
         fitFile,
       });
       setRouteResult(result);
@@ -75,6 +77,7 @@ export default function App() {
         startLon: startPoint.lon,
         maxApproachMinutes,
         segmentReuse,
+        allowUTurns,
         fitFile,
       });
       downloadBlob(blob, "trainingsroute.gpx");
@@ -142,6 +145,14 @@ export default function App() {
                 <option value="PreferVariety">Streckenvielfalt</option>
               </select>
             </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={allowUTurns}
+                onChange={(e) => setAllowUTurns(e.target.checked)}
+              />
+              Kehrtwenden erlauben
+            </label>
           </fieldset>
 
           <button type="submit" disabled={loading || !startPoint || !fitFile}>
@@ -156,6 +167,28 @@ export default function App() {
             <h2>Ergebnis</h2>
             <p>Distanz: {(routeResult.totalDistanceMeters / 1000).toFixed(1)} km</p>
             <p>Geschätzte Zeit: {formatDotNetTimeSpan(routeResult.estimatedTotalTime)}</p>
+
+            {routeResult.segments.length > 0 && (
+              <div className="legend">
+                <strong>Intervalle:</strong>
+                <ul>
+                  {[...new Set(routeResult.segments.map((s) => s.label))].map((label) => (
+                    <li key={label}>
+                      <span
+                        className="legend-swatch"
+                        style={{
+                          background: colorForSegmentLabel(
+                            label,
+                            routeResult.segments.map((s) => s.label),
+                          ),
+                        }}
+                      />
+                      {label}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {routeResult.warnings.length > 0 && (
               <div className="warnings">
@@ -180,6 +213,7 @@ export default function App() {
           startPoint={startPoint}
           onStartPointChange={setStartPoint}
           routeGeometry={routeResult?.geometry ?? null}
+          routeSegments={routeResult?.segments ?? null}
         />
       </main>
     </div>

@@ -80,4 +80,63 @@ internal static class PolylineMath
 
         return (end.Elevation.Value - start.Elevation.Value) / horizontalDistance;
     }
+
+    public static double BearingDegrees(GeoPoint from, GeoPoint to)
+    {
+        var phi1 = from.Lat * Math.PI / 180.0;
+        var phi2 = to.Lat * Math.PI / 180.0;
+        var dLambda = (to.Lon - from.Lon) * Math.PI / 180.0;
+        var x = Math.Sin(dLambda) * Math.Cos(phi2);
+        var y = Math.Cos(phi1) * Math.Sin(phi2) - Math.Sin(phi1) * Math.Cos(phi2) * Math.Cos(dLambda);
+        var bearing = Math.Atan2(x, y) * 180.0 / Math.PI;
+        return (bearing + 360.0) % 360.0;
+    }
+
+    private static double AngleDiffDegrees(double a, double b)
+    {
+        var diff = Math.Abs(a - b) % 360.0;
+        return Math.Min(diff, 360.0 - diff);
+    }
+
+    /// <summary>Findet Stellen entlang der Route, an denen sich die Fahrtrichtung abrupt
+    /// umkehrt (naeherungsweise eine Kehrtwende) - vergleicht die Peilung kurz vor und kurz
+    /// nach jedem Punkt. Siehe CONCEPT.md: Nutzereinstellung "keine Kehrtwenden", die das nicht
+    /// in jedem Fall algorithmisch verhindern kann (z.B. echte Sackgassen), aber zumindest
+    /// transparent anzeigen soll.</summary>
+    public static List<GeoPoint> DetectSharpReversals(
+        IReadOnlyList<GeoPoint> geometry, double windowMeters = 40, double angleThresholdDegrees = 150)
+    {
+        var result = new List<GeoPoint>();
+        if (geometry.Count < 3) return result;
+
+        var totalLength = TotalLengthMeters(geometry);
+        var cumulative = new double[geometry.Count];
+        for (var i = 1; i < geometry.Count; i++)
+            cumulative[i] = cumulative[i - 1] + HaversineMeters(geometry[i - 1], geometry[i]);
+
+        double lastDetectionDistance = double.NegativeInfinity;
+        for (var i = 1; i < geometry.Count - 1; i++)
+        {
+            var beforeDist = Math.Max(0, cumulative[i] - windowMeters);
+            var afterDist = Math.Min(totalLength, cumulative[i] + windowMeters);
+            var before = PointAtDistance(geometry, beforeDist);
+            var after = PointAtDistance(geometry, afterDist);
+            if (HaversineMeters(before, geometry[i]) < 1 || HaversineMeters(after, geometry[i]) < 1)
+                continue; // zu nah an Routenanfang/-ende fuer ein sinnvolles Fenster
+
+            var bearingIn = BearingDegrees(before, geometry[i]);
+            var bearingOut = BearingDegrees(geometry[i], after);
+            if (AngleDiffDegrees(bearingIn, bearingOut) < angleThresholdDegrees)
+                continue;
+
+            // Eine einzelne Kehrtwende schlaegt ueber mehrere benachbarte Punkte hinweg an -
+            // nur den ersten Treffer je zusammenhaengendem Bereich behalten.
+            if (cumulative[i] - lastDetectionDistance < windowMeters * 2)
+                continue;
+
+            result.Add(geometry[i]);
+            lastDetectionDistance = cumulative[i];
+        }
+        return result;
+    }
 }

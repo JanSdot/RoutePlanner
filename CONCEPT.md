@@ -223,6 +223,12 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 - Manuelle Block-Builder-UI als Alternative zum FIT-Import
 - A-nach-B-Routing (statt nur Rundkurs)
 - Windmodellierung (aktuell bewusst ignoriert)
+- Integration von Baustellen (aktuelle Straßensperrungen/-einschränkungen in die Korridor-/
+  Routenbewertung einbeziehen, z. B. über OSM `construction`-Tags oder externe Baustellen-Feeds)
+- Anzeige des Straßenbelags auf der Karte (haben wir bereits als Rohdatum, aber noch nicht visuell
+  aufbereitet)
+- Nutzer können Segmente selbst bewerten/sperren (z. B. "diese Straße meiden" dauerhaft im Profil
+  hinterlegen, unabhängig vom automatischen Score aus 3.4)
 
 ## 6.1 Phase 0 — Ergebnis (durchgeführt)
 
@@ -326,6 +332,36 @@ eingereicht und lieferte eine vollständige 27,5-km-Route mit 572 Geometriepunkt
 genau der erwarteten Transparenz-Warnungen (Korridor-Fallback ausgelöst, Anfahrt-Budget
 überschritten). Bestätigt, dass die komplette Kette (FIT-Import → Leistungsmodell →
 Korridor-Suche → GraphHopper → Fallback-Eskalation) end-to-end funktioniert.
+
+## 6.3 Phase 2 — Nacharbeit: Kehrtwenden-Vermeidung (durchgeführt)
+
+Bei manuellen Tests fiel auf: Wird derselbe Korridor für mehrere Wiederholungen desselben
+Trainingsschritts wiederverwendet (Standardeinstellung "Gleicher Ort"), muss die Route vom
+Korridorende zurück zum -anfang - ohne alternative Straße in der Nähe geht das oft nur per
+Kehrtwende. Neuer Parameter **`RouteRequest.AllowUTurns`** (Default `true`):
+
+- Bei `false` wird die exakte Korridor-Wiederverwendung deaktiviert (Verhalten faellt effektiv
+  auf "Streckenvielfalt" zurück), damit jede Wiederholung eine eigene Verbindungsstrecke ohne
+  erzwungenen Rückweg bekommt.
+- Zusätzlich prüft `PolylineMath.DetectSharpReversals` die finale Routen-Geometrie auf abrupte
+  Richtungswechsel (Peilungsvergleich kurz vor/nach jedem Punkt, Schwelle ~150°) und meldet
+  verbleibende Kehrtwenden transparent als Warnung — kann in dünnen Straßennetzen (z. B. echte
+  Sackgassen) nicht immer vollständig vermieden werden, folgt aber derselben "kein harter
+  Fehlschlag, aber transparent gekennzeichnet"-Philosophie wie die Fallback-Eskalation (4.3).
+
+Frontend: Checkbox "Kehrtwenden erlauben" im Formular. End-to-End getestet (echtes Chrome via
+Claude-in-Chrome-Erweiterung) — bei deaktivierter Checkbox erscheinen tatsächlich unterschiedliche
+Korridor-Segmente statt Wiederverwendung, plus ehrliche Kehrtwenden-Warnungen dort, wo das
+Straßennetz keine Alternative bot.
+
+## 6.4 Phase 2 — Segment-Einfärbung nach Trainingsschritt (durchgeführt)
+
+`RouteResult` trägt jetzt zusätzlich zur Gesamt-Geometrie eine Liste **`Segments`**
+(`RouteSegment { Label, Geometry }`) — ein Eintrag pro gefundenem Effort-Korridor, mit dem Label
+des zugehörigen Trainingsschritts (z. B. "Work"). Frontend zeichnet die Gesamtroute als dünne
+blaue Linie und legt die Segmente in individuellen Farben (feste Palette, pro Label konsistent)
+darüber, mit Legende in der Seitenleiste — Nutzer erkennen so die Intervalle aus dem FIT-File auf
+der Karte wieder.
 
 ## 7. Offene Punkte
 

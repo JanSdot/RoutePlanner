@@ -75,6 +75,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
     GeoPoint start;
     double maxApproachMinutes;
     SegmentReusePreference reuse;
+    bool allowUTurns;
     try
     {
         rider = new RiderProfile
@@ -88,6 +89,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         reuse = string.Equals(form["segmentReuse"], "PreferVariety", StringComparison.OrdinalIgnoreCase)
             ? SegmentReusePreference.PreferVariety
             : SegmentReusePreference.PreferReuse;
+        allowUTurns = !string.Equals(form["allowUTurns"], "false", StringComparison.OrdinalIgnoreCase);
     }
     catch (ArgumentException ex)
     {
@@ -112,6 +114,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         Rider = rider,
         MaxApproachMinutes = maxApproachMinutes,
         SegmentReuse = reuse,
+        AllowUTurns = allowUTurns,
     };
 
     try

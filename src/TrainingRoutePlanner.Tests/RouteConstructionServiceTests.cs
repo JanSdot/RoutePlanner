@@ -261,4 +261,117 @@ public class RouteConstructionServiceTests
         Assert.All(corridors.Calls, call => Assert.True(call.Radius <= expectedCap + 0.01,
             $"Suchradius {call.Radius} überschreitet den Anfahrt-Budget-Deckel {expectedCap}"));
     }
+
+    [Fact]
+    public async Task EffortStepWithCorridor_IsReturnedAsLabeledSegment()
+    {
+        var corridor = MakeCorridor();
+        var corridors = new FakeCorridorIndex { Responder = _ => corridor };
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+
+        var quietStep = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(20), Rider);
+        var workStep = ZoneResolver.FromFtpPercent(115, TimeSpan.FromMinutes(3), Rider, label: "Work");
+        var result = await service.BuildRouteAsync(MakeRequest([quietStep, workStep]));
+
+        var segment = Assert.Single(result.Segments);
+        Assert.Equal("Work", segment.Label);
+        Assert.Equal(corridor.Geometry, segment.Geometry);
+    }
+
+    [Fact]
+    public async Task QuietOnlyPlan_HasNoSegments()
+    {
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(MakeRequest([step]));
+
+        Assert.Empty(result.Segments);
+    }
+
+    [Fact]
+    public async Task AllowUTurnsFalse_DisablesExactReuse_ForRepeatedSteps()
+    {
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        var service = new RouteConstructionService(new FakeGraphHopperClient(), corridors, new PowerSpeedModel());
+
+        var step1 = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
+        var step2 = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
+        var request = new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step1, step2] },
+            SegmentReuse = SegmentReusePreference.PreferReuse,
+            AllowUTurns = false,
+        };
+
+        await service.BuildRouteAsync(request);
+
+        // Trotz "PreferReuse" wird bei AllowUTurns=false fuer jede Wiederholung frisch gesucht,
+        // da sonst zwangsweise ein Rueckweg entlang desselben Korridors noetig waere.
+        Assert.Equal(2, corridors.Calls.Count);
+    }
+
+    [Fact]
+    public async Task AllowUTurnsFalse_FlagsSharpReversalInFinalGeometry()
+    {
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        var ghClient = new FakeGraphHopperClient
+        {
+            // Gerade Strecke raus, dann eine scharfe Kehrtwende (~180 Grad) zurueck.
+            GeometryFactory = _ =>
+            [
+                new GeoPoint(52.50, 13.50),
+                new GeoPoint(52.51, 13.50),
+                new GeoPoint(52.52, 13.50),
+                new GeoPoint(52.51, 13.50),
+                new GeoPoint(52.50, 13.50),
+            ],
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
+        var request = new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            AllowUTurns = false,
+        };
+
+        var result = await service.BuildRouteAsync(request);
+
+        Assert.Contains(result.Warnings, w => w.Message.Contains("Kehrtwende"));
+    }
+
+    [Fact]
+    public async Task AllowUTurnsTrue_DoesNotCheckForReversals()
+    {
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        var ghClient = new FakeGraphHopperClient
+        {
+            GeometryFactory = _ =>
+            [
+                new GeoPoint(52.50, 13.50),
+                new GeoPoint(52.51, 13.50),
+                new GeoPoint(52.52, 13.50),
+                new GeoPoint(52.51, 13.50),
+                new GeoPoint(52.50, 13.50),
+            ],
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.EB, TimeSpan.FromMinutes(5), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            AllowUTurns = true,
+        });
+
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Kehrtwende"));
+    }
 }

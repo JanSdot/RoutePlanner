@@ -21,6 +21,7 @@ public class GpxWriterTests
             TotalDistanceMeters = 1500,
             EstimatedTotalTime = TimeSpan.FromMinutes(5),
             Warnings = [],
+            Segments = [],
         };
 
         var gpx = GpxWriter.ToGpx(result, "Test Route");

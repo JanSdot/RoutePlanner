@@ -26,6 +26,17 @@
   margin-bottom: 0.75rem;
 }
 
+.sidebar form label.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.sidebar form label.checkbox-label input {
+  width: auto;
+  margin: 0;
+}
+
 .sidebar form input,
 .sidebar form select {
   display: block;
@@ -90,6 +101,32 @@
   padding: 0.5rem 0.75rem;
   font-size: 0.85rem;
   margin: 0.75rem 0;
+}
+
+.legend {
+  font-size: 0.85rem;
+  margin: 0.75rem 0;
+}
+
+.legend ul {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 2px;
+  flex-shrink: 0;
 }
 
 .warnings ul {

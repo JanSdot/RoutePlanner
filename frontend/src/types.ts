@@ -9,11 +9,17 @@ export interface RouteWarning {
   location?: GeoPoint | null;
 }
 
+export interface RouteSegment {
+  label: string;
+  geometry: GeoPoint[];
+}
+
 export interface RouteResult {
   geometry: GeoPoint[];
   totalDistanceMeters: number;
   estimatedTotalTime: string; // .NET TimeSpan "c" format: "hh:mm:ss.fffffff"
   warnings: RouteWarning[];
+  segments: RouteSegment[];
 }
 
 export type SegmentReusePreference = "PreferReuse" | "PreferVariety";
@@ -30,5 +36,6 @@ export interface RouteFormInput {
   startLon: number;
   maxApproachMinutes: number;
   segmentReuse: SegmentReusePreference;
+  allowUTurns: boolean;
   fitFile: File;
 }
