@@ -35,6 +35,10 @@ public class RouteConstructionServiceTests
         // simulieren (fuer die Untergrund-Vermeidungs-Tests) - Default: kein Untergrund-Anteil.
         public Func<int, IReadOnlyList<SurfaceSegment>>? SurfaceSegmentsBySeed { get; set; }
 
+        // Analog zu SurfaceSegmentsBySeed, fuer die smoothness=bad-Vermeidung (CONCEPT.md 6.19) -
+        // Default: kein schlechter Smoothness-Anteil.
+        public Func<int, IReadOnlyList<SurfaceSegment>>? SmoothnessSegmentsBySeed { get; set; }
+
         public List<IReadOnlyList<BlockedArea>> BlockedAreasReceived { get; } = [];
 
         public Task<GraphHopperRoute> RoundTripAsync(
@@ -53,7 +57,9 @@ public class RouteConstructionServiceTests
                 start,
             };
             var surfaceSegments = SurfaceSegmentsBySeed?.Invoke(seed) ?? [];
-            return Task.FromResult(new GraphHopperRoute(distanceMeters, TimeSpan.FromSeconds(distanceMeters / 8.0), geometry, surfaceSegments));
+            var smoothnessSegments = SmoothnessSegmentsBySeed?.Invoke(seed) ?? [];
+            return Task.FromResult(new GraphHopperRoute(
+                distanceMeters, TimeSpan.FromSeconds(distanceMeters / 8.0), geometry, surfaceSegments, smoothnessSegments));
         }
 
         public Task<GraphHopperRoute> RouteThroughWaypointsAsync(
@@ -61,7 +67,7 @@ public class RouteConstructionServiceTests
         {
             WaypointCalls.Add(waypoints);
             BlockedAreasReceived.Add(blockedAreas);
-            return Task.FromResult(new GraphHopperRoute(RoundTripDistanceMeters, FinalRouteTime, waypoints, []));
+            return Task.FromResult(new GraphHopperRoute(RoundTripDistanceMeters, FinalRouteTime, waypoints, [], []));
         }
     }
 
@@ -381,6 +387,17 @@ public class RouteConstructionServiceTests
         },
     ];
 
+    // Wie UnpavedSegmentOfLength, aber ueber "smoothness" statt "surface" - siehe CONCEPT.md
+    // 6.19 (smoothness=bad soll wie unbefestigt behandelt werden).
+    private static IReadOnlyList<SurfaceSegment> BadSmoothnessSegmentOfLength(double approxMeters) =>
+    [
+        new SurfaceSegment
+        {
+            Surface = "bad",
+            Geometry = [new GeoPoint(52.50, 13.50), new GeoPoint(52.50 + approxMeters / 111_200.0, 13.50)],
+        },
+    ];
+
     [Fact]
     public async Task NoUnpavedLimits_MakesOnlyOneRoundTripAttempt()
     {
@@ -537,6 +554,98 @@ public class RouteConstructionServiceTests
 
         Assert.Equal([1, 2], ghClient.RoundTripSeeds);
         Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
+    }
+
+    [Fact]
+    public async Task BadSmoothnessOnly_IsTreatedLikeUnpavedSurface_ForTotalLimit()
+    {
+        var corridors = new FakeCorridorIndex();
+        // Seed 1 hat einen zu langen smoothness=bad-Abschnitt trotz einwandfreier Oberflaeche
+        // (keine SurfaceSegmentsBySeed gesetzt) - Seed 2 erfuellt das Limit.
+        var ghClient = new FakeGraphHopperClient
+        {
+            SmoothnessSegmentsBySeed = seed => seed == 1 ? BadSmoothnessSegmentOfLength(2000) : BadSmoothnessSegmentOfLength(100),
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            MaxTotalUnpavedMeters = 500,
+        });
+
+        Assert.Equal([1, 2], ghClient.RoundTripSeeds);
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
+    }
+
+    [Fact]
+    public async Task RequiredPoints_AreInsertedAsWaypoints_EvenWithoutEffortSteps()
+    {
+        var corridors = new FakeCorridorIndex();
+        var ghClient = new FakeGraphHopperClient();
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        var requiredPoint = new GeoPoint(52.5426187 + 0.02, 13.4763778 + 0.02);
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            RequiredPoints = [requiredPoint],
+        });
+
+        // Ein reiner GA1-Plan loest sonst NIE Wegpunkt-Routing aus (siehe QuietOnlyPlan-Tests) -
+        // ein Pflicht-Wegpunkt muss das trotzdem erzwingen.
+        var waypoints = Assert.Single(ghClient.WaypointCalls);
+        Assert.Equal(Start, waypoints[0]);
+        Assert.Equal(Start, waypoints[^1]);
+        Assert.Contains(requiredPoint, waypoints);
+    }
+
+    [Fact]
+    public async Task RequiredPoints_AreOrderedByPositionAlongTheLoop_NotInputOrder()
+    {
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        // Simple quadratisches Loop: Start (0,0) -> (0,0.05) -> (0.05,0.05) -> (0.05,0) -> Start.
+        var ghClient = new FakeGraphHopperClient
+        {
+            GeometryFactory = _ =>
+            [
+                Start,
+                new GeoPoint(Start.Lat + 0.05, Start.Lon),
+                new GeoPoint(Start.Lat + 0.05, Start.Lon + 0.05),
+                new GeoPoint(Start.Lat, Start.Lon + 0.05),
+                Start,
+            ],
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel());
+
+        // Liegt bei ca. 70% der Schleife (auf dem dritten Segment). Der einzige Trainingsschritt
+        // ist ein Effort-Schritt und wird daher deterministisch bei Fraktion 0 (Schleifenanfang)
+        // platziert - der Pflicht-Wegpunkt muss trotz frueherer Position in RequiredPoints danach
+        // einsortiert werden.
+        var lateRequiredPoint = new GeoPoint(Start.Lat + 0.01, Start.Lon + 0.05);
+
+        var workStep = ZoneResolver.FromFtpPercent(115, TimeSpan.FromMinutes(3), Rider, label: "Work");
+        var request = new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [workStep] },
+            RequiredPoints = [lateRequiredPoint],
+        };
+
+        await service.BuildRouteAsync(request);
+
+        var waypoints = Assert.Single(ghClient.WaypointCalls).ToList();
+        var corridorStartIndex = waypoints.IndexOf(MakeCorridor().Start);
+        var requiredPointIndex = waypoints.IndexOf(lateRequiredPoint);
+        Assert.True(requiredPointIndex > corridorStartIndex,
+            "Der spaeter in der Schleife liegende Pflicht-Wegpunkt sollte NACH dem Korridor einsortiert werden");
     }
 
     [Fact]

@@ -48,4 +48,11 @@ public sealed class RouteRequest
     /// (round_trip UND Wegpunkt-Routing) komplett gemieden werden sollen, siehe CONCEPT.md
     /// Abschnitt 6.18. Leer = keine Sperrungen.</summary>
     public IReadOnlyList<BlockedArea> BlockedAreas { get; init; } = [];
+
+    /// <summary>Vom Nutzer auf der Karte markierte Punkte, durch die die finale Route
+    /// zwingend fuehren MUSS (als zusaetzliche GraphHopper-Wegpunkte, siehe
+    /// RouteConstructionService), siehe CONCEPT.md Abschnitt 6.19. Werden anhand ihrer Position
+    /// entlang der groben Rundtour-Form einsortiert - die Eingabe-Reihenfolge spielt keine Rolle.
+    /// Leer = keine Pflicht-Wegpunkte.</summary>
+    public IReadOnlyList<GeoPoint> RequiredPoints { get; init; } = [];
 }

@@ -221,8 +221,6 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 
 - Mehrbenutzerfähigkeit, Auth, Hosting/Deployment für andere Nutzer
 - A-nach-B-Routing (statt nur Rundkurs)
-- Nutzer setzt manuell eigene Wegpunkte, um die berechnete Route gezielt anzupassen
-  (z. B. einen bestimmten Abschnitt umgehen oder erzwingen)
 - Windmodellierung (aktuell bewusst ignoriert)
 - Grundlegender Umbau: die GESAMTE Rundstrecke (nicht nur Intervall-Segmente wie bisher) aus
   aneinandergereihten, niedrig bewerteten Korridoren verketten statt GraphHoppers round_trip als
@@ -235,6 +233,11 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 - Landstrassen mit niedrigerem Tempolimit bevorzugen, wenn der Untergrund gut ist (weniger/
   langsamerer Durchgangsverkehr auf ungeschuetzten Strecken) - vom Nutzer vorgeschlagen, noch
   nicht umgesetzt
+- Feinere Abstufung von `urban_density` als GraphHoppers 3 fixe Stufen (RURAL/RESIDENTIAL/CITY) -
+  vom Nutzer als Frage aufgeworfen (z. B. sollte das Sportforum als dichter besiedelt gelten als
+  Altlandsberg, auch wenn beide nicht CITY sind). Braeuchte entweder OSM `place=*`-Tags
+  (village/town/city) als zusaetzliches Signal oder eine eigene Dichte-Berechnung - GraphHopper
+  selbst bietet keine feinere Abstufung an. Noch nicht umgesetzt.
 - Zwei Startpunkte fuer gemeinsames Training mehrerer Sportler - offene Design-Frage, ob ein
   gemeinsamer Treffpunkt auf der Strecke berechnet wird (jeder faehrt von seinem Start dorthin,
   dann gemeinsame Runde) oder beide einfach ihre eigene Anfahrt zur selben Rundstrecke bekommen
@@ -815,6 +818,58 @@ gesendeten Request-Body inkl. geschlossenem Polygon-Ring), volle Testsuite (60/6
 API-Umbau grün. Live gegen echtes GraphHopper verifiziert: Route mit gesperrtem 40m-Bereich
 bleibt exakt 41m vom Zentrum entfernt (vorher führte sie mittendurch) - UI-Interaktion
 (Klick → Popup → Sperren → roter Kreis → Sidebar-Eintrag) im echten Chrome bestätigt.
+
+## 6.19 Phase 2 — Pflicht-Wegpunkte auf der Karte erzwingen (durchgeführt)
+
+Ergänzung zu 6.18: Nutzer wollte nicht nur Abschnitte sperren, sondern auch einen bestimmten
+Punkt gezielt IN die Route einschließen können - schließt die zweite Hälfte der
+Phase-4-Backlog-Idee "Nutzer setzt manuell eigene Wegpunkte ... (umgehen ODER erzwingen)".
+
+**Umsetzung:** `RouteRequest.RequiredPoints` (einfache `GeoPoint`-Liste, kein Radius nötig -
+GraphHopper snapped ohnehin auf den nächsten routbaren Weg). In `RouteConstructionService`
+werden diese Punkte NICHT einfach an die Korridor-Wegpunkte angehängt, sondern anhand ihrer
+nächsten Projektion auf die grobe Rundtour-Form (`PolylineMath.NearestPointDistanceAlongMeters`,
+neue Punkt-auf-Segment-Projektion mit derselben flachen Grad/Meter-Näherung wie schon bei den
+BlockedArea-Kreisen) in der richtigen Reihenfolge zwischen die Korridor-Start/Ende-Paare
+einsortiert - sonst würde ein spät in der Route liegender Pflichtpunkt, der zufällig zuerst in
+der Liste steht, einen unnötigen Umweg erzwingen. Ein einzelner Pflicht-Wegpunkt reicht bereits
+aus, um `RouteThroughWaypointsAsync` statt des reinen `round_trip`-Ergebnisses zu erzwingen, auch
+bei einem sonst rein ruhigen Plan ohne Effort-Schritte.
+
+Frontend: Kartenklick-Popup (6.18) um einen dritten Button "Diesen Punkt in die Route
+einschließen" erweitert. Pflicht-Wegpunkte werden als grüner Kreis-Layer angezeigt und in einer
+eigenen Sidebar-Liste ("Pflicht-Wegpunkte") verwaltet, analog zu den gesperrten Bereichen.
+
+Getestet: 2 neue Unit-Tests für `RouteConstructionService` (Pflicht-Wegpunkt erzwingt
+Wegpunkt-Routing auch ohne Effort-Schritt; Einsortierung nach Position in der Schleife statt nach
+Eingabe-Reihenfolge), volle Testsuite grün.
+
+## 6.20 Phase 2 — smoothness=bad wie unbefestigten Untergrund behandeln (durchgeführt)
+
+Beim Nachschauen einer vom Nutzer gemeldeten Koordinate (Birkensteiner Straße, 52.51750,
+13.66599) fiel auf: `surface=sett` (bereits als unbefestigt erfasst, siehe 6.9) UND
+`smoothness=bad` gemeinsam getaggt. Nutzer wollte `smoothness=bad` als eigenständiges,
+zusätzliches Kriterium - deckt auch Fälle ab, wo ein Belag rissig/holprig, aber gar nicht über
+`surface` als problematisch getaggt ist (z. B. alter Asphalt ohne eigenes `surface`-Tag).
+
+**Umsetzung:** GraphHopper-`smoothness`-Encoded-Value aktiviert (`graph.encoded_values`), als
+zusätzliches `path_details`-Feld angefragt (`GraphHopperClient.Details`). `SurfaceClassifier.
+IsBadSmoothness` (Denylist: BAD/VERY_BAD/HORRIBLE/VERY_HORRIBLE/IMPASSABLE) wird in
+`RouteConstructionService.EvaluateUnpavedSurfaces` GEMEINSAM mit der bestehenden
+Oberflächen-Denylist ausgewertet - beide Anteile werden zur "Badness"/Grenzwert-Bewertung
+aufsummiert. Überschneiden sich beide Warnungen auf demselben physischen Abschnitt (surface- und
+smoothness-`path_details` nutzen unabhängige Indexbereiche über dieselbe Geometrie), wird das
+bewusst doppelt gezählt statt exakt über Geometrie-Indizes verrechnet - bewusst grob wie schon
+bei `JunctionBadnessWeightMeters` (6.13), und hier zusätzlich in der sicheren Richtung: eine
+Überschätzung kostet höchstens einen unnötigen weiteren Versuch, eine Unterschätzung würde einen
+tatsächlich schlechten Abschnitt durch die Nutzer-Grenzwerte rutschen lassen. Auf Profil-Ebene
+zusätzlich dieselbe Abwertung (`multiply_by: 0.5`) wie beim Untergrund (6.12) - macht auch hier
+schon den ersten Versuch wahrscheinlicher konform.
+
+Getestet: neue Unit-Tests für `GraphHopperClient` (parst `smoothness`-`path_details` korrekt,
+fragt beide Details-Keys an) und `RouteConstructionService` (ein reiner smoothness=bad-Abschnitt
+ohne jedes surface-Problem löst denselben Retry-Mechanismus aus wie ein unbefestigter
+Oberflächen-Abschnitt), volle Testsuite grün.
 
 ## 7. Offene Punkte
 

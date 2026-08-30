@@ -16,4 +16,16 @@ public static class SurfaceClassifier
     };
 
     public static bool IsUnpaved(string surface) => UnpavedSurfaces.Contains(surface);
+
+    /// <summary>OSM/GraphHopper <c>smoothness</c>-Werte ab denen ein an sich befestigter
+    /// Untergrund (z.B. Kopfsteinpflaster, alter Asphalt) fuer Rennrad-Reifen trotzdem
+    /// spuerbar unangenehm ist - siehe CONCEPT.md 6.19. Bewusst ab "bad" (nicht erst
+    /// "very_bad"), da genau das der vom Nutzer beobachtete Fall war (Birkensteiner Strasse,
+    /// surface=sett + smoothness=bad).</summary>
+    private static readonly HashSet<string> BadSmoothnessValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bad", "very_bad", "horrible", "very_horrible", "impassable",
+    };
+
+    public static bool IsBadSmoothness(string smoothness) => BadSmoothnessValues.Contains(smoothness);
 }

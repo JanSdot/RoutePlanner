@@ -9,7 +9,8 @@ public sealed record GraphHopperRoute(
     double DistanceMeters,
     TimeSpan Time,
     IReadOnlyList<GeoPoint> Geometry,
-    IReadOnlyList<SurfaceSegment> SurfaceSegments);
+    IReadOnlyList<SurfaceSegment> SurfaceSegments,
+    IReadOnlyList<SurfaceSegment> SmoothnessSegments);
 
 /// <summary>Thin wrapper over the GraphHopper /route endpoint, see CONCEPT.md Abschnitt 4.2.
 /// Requires the GraphHopper profile to run WITHOUT contraction hierarchies - round_trip is
@@ -74,31 +75,32 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
         var geometry = path.Points.Coordinates
             .Select(c => new GeoPoint(c[1], c[0], c.Length > 2 ? c[2] : null))
             .ToList();
-        var surfaceSegments = ParseSurfaceSegments(path.Details, geometry);
+        var surfaceSegments = ParsePathDetailSegments(path.Details, geometry, "surface");
+        var smoothnessSegments = ParsePathDetailSegments(path.Details, geometry, "smoothness");
 
-        return new GraphHopperRoute(path.Distance, TimeSpan.FromMilliseconds(path.Time), geometry, surfaceSegments);
+        return new GraphHopperRoute(
+            path.Distance, TimeSpan.FromMilliseconds(path.Time), geometry, surfaceSegments, smoothnessSegments);
     }
 
-    // GraphHopper liefert die per "details=surface" angeforderten Path Details als
+    // GraphHopper liefert die per "details=..." angeforderten Path Details als
     // [vonIndex, bisIndex, wert]-Tripel, die Indizes in path.Points.Coordinates. Fehlt der
-    // "surface"-Key ganz (z.B. Encoded-Value nicht in der GraphHopper-Config aktiv), gibt es
-    // einfach keine Segmente statt eines Fehlers - das Feature ist rein additiv fuer die
-    // Kartenanzeige.
-    private static List<SurfaceSegment> ParseSurfaceSegments(
-        Dictionary<string, List<JsonElement>>? details, IReadOnlyList<GeoPoint> geometry)
+    // angefragte Key ganz (z.B. Encoded-Value nicht in der GraphHopper-Config aktiv), gibt es
+    // einfach keine Segmente statt eines Fehlers.
+    private static List<SurfaceSegment> ParsePathDetailSegments(
+        Dictionary<string, List<JsonElement>>? details, IReadOnlyList<GeoPoint> geometry, string detailKey)
     {
         var result = new List<SurfaceSegment>();
-        if (details is null || !details.TryGetValue("surface", out var ranges))
+        if (details is null || !details.TryGetValue(detailKey, out var ranges))
             return result;
 
         foreach (var range in ranges)
         {
             var fromIndex = range[0].GetInt32();
             var toIndex = range[1].GetInt32();
-            var surface = range[2].GetString() ?? "unknown";
+            var value = range[2].GetString() ?? "unknown";
             result.Add(new SurfaceSegment
             {
-                Surface = surface,
+                Surface = value,
                 Geometry = geometry.Skip(fromIndex).Take(toIndex - fromIndex + 1).ToList(),
             });
         }
@@ -170,7 +172,7 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
         public required string Profile { get; set; }
         public bool PointsEncoded { get; set; } = false;
         public bool Elevation { get; set; } = true;
-        public List<string> Details { get; set; } = ["surface"];
+        public List<string> Details { get; set; } = ["surface", "smoothness"];
         public string? Algorithm { get; set; }
 
         [JsonPropertyName("round_trip.distance")]

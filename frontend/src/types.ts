@@ -59,6 +59,9 @@ export interface RouteFormInput {
   // MaxRouteVariantAttempts (Backend).
   maxRouteVariantAttempts?: number | null;
   blockedAreas: BlockedArea[];
+  // Punkte, durch die die Route zwingend fuehren soll - siehe RouteRequest.RequiredPoints
+  // (Backend).
+  requiredPoints: GeoPoint[];
   fitFile: File;
 }
 

@@ -78,7 +78,8 @@ public sealed class RouteConstructionService(
         {
             attemptsMade++;
             var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, ct);
-            var (totalUnpavedMeters, maxUnpavedSegmentMeters) = EvaluateUnpavedSurfaces(result.SurfaceSegments);
+            var (totalUnpavedMeters, maxUnpavedSegmentMeters) =
+                EvaluateUnpavedSurfaces(result.SurfaceSegments, result.SmoothnessSegments);
             var junctionCount = corridorIndex.CountDisruptiveJunctionsNear(result.Geometry, JunctionProximityMeters);
 
             var badness = totalUnpavedMeters + junctionCount * JunctionBadnessWeightMeters;
@@ -116,6 +117,7 @@ public sealed class RouteConstructionService(
             Warnings = warnings,
             Segments = bestResult.Segments,
             SurfaceSegments = bestResult.SurfaceSegments,
+            SmoothnessSegments = bestResult.SmoothnessSegments,
         };
     }
 
@@ -128,7 +130,11 @@ public sealed class RouteConstructionService(
         var roughLoopLength = PolylineMath.TotalLengthMeters(roughLoop.Geometry);
         var totalDistance = stepDistances.Sum();
 
-        var waypoints = new List<GeoPoint> { request.StartPoint };
+        // Jede Gruppe traegt die Position (0..1) entlang der groben Rundtour-Form, an der sie
+        // in die finalen Wegpunkte einsortiert werden soll - Korridor-Start/Ende UND
+        // Pflicht-Wegpunkte landen so in einer gemeinsamen, sinnvollen Reihenfolge (siehe
+        // CONCEPT.md 6.19), statt dass letztere die Route auf einen Umweg zwingen.
+        var waypointGroups = new List<(double Fraction, List<GeoPoint> Points)>();
         var reuseCache = new Dictionary<(double PowerBucket, double ScoreBucket), Corridor>();
         var segments = new List<RouteSegment>();
         var cumulativeDistance = 0.0;
@@ -148,14 +154,24 @@ public sealed class RouteConstructionService(
                 step, stepDistance, targetPoint, request.SegmentReuse, request.AllowUTurns, reuseCache, maxApproachRadiusMeters, warnings);
             if (corridor is not null)
             {
-                waypoints.Add(corridor.Start);
-                waypoints.Add(corridor.End);
                 // Korridor-Geometrie direkt uebernehmen statt aus der finalen Route
                 // herauszuschneiden - GraphHopper folgt zwischen exakt diesen zwei Punkten
                 // ohnehin derselben Strecke, da wir sie ja genau deswegen gewaehlt haben.
+                waypointGroups.Add((stepStartFraction, [corridor.Start, corridor.End]));
                 segments.Add(new RouteSegment { Label = step.Label ?? "Intervall", Geometry = corridor.Geometry });
             }
         }
+
+        foreach (var requiredPoint in request.RequiredPoints)
+        {
+            var distanceAlong = PolylineMath.NearestPointDistanceAlongMeters(roughLoop.Geometry, requiredPoint);
+            var fraction = roughLoopLength <= 0 ? 0 : distanceAlong / roughLoopLength;
+            waypointGroups.Add((fraction, [requiredPoint]));
+        }
+
+        var waypoints = new List<GeoPoint> { request.StartPoint };
+        foreach (var group in waypointGroups.OrderBy(g => g.Fraction))
+            waypoints.AddRange(group.Points);
         waypoints.Add(request.StartPoint);
 
         var finalRoute = waypoints.Count > 2
@@ -174,17 +190,37 @@ public sealed class RouteConstructionService(
             Warnings = warnings,
             Segments = segments,
             SurfaceSegments = finalRoute.SurfaceSegments,
+            SmoothnessSegments = finalRoute.SmoothnessSegments,
         };
     }
 
+    /// <summary>Kombiniert Oberflaechen- (surface=unpaved/gravel/...) UND Rauhigkeits-Warnungen
+    /// (smoothness=bad/very_bad/..., siehe CONCEPT.md 6.19 - z.B. Kopfsteinpflaster, das GraphHopper
+    /// via surface=sett ohnehin schon erfasst, aber auch alter/rissiger Asphalt ohne surface-Tag)
+    /// zu EINER "wie viel unangenehmer Untergrund liegt auf dieser Route"-Bewertung. Ueberschneiden
+    /// sich beide Warnungen auf demselben physischen Abschnitt (surface- und smoothness-Details
+    /// nutzen unabhaengige Indexbereiche ueber dieselbe Geometrie), wird dieser Abschnitt bewusst
+    /// doppelt gezaehlt statt ihn ueber Geometrie-Indizes exakt zu verrechnen - wie bei
+    /// JunctionBadnessWeightMeters bewusst grob, und hier zusaetzlich in der SICHEREN Richtung:
+    /// eine Ueberschaetzung fuehrt hoechstens zu einem unnoetigen weiteren Versuch, eine
+    /// Unterschaetzung wuerde einen tatsaechlich zu schlechten Abschnitt durch die Nutzer-Grenzwerte
+    /// rutschen lassen.</summary>
     private static (double TotalUnpavedMeters, double MaxUnpavedSegmentMeters) EvaluateUnpavedSurfaces(
-        IReadOnlyList<SurfaceSegment> surfaceSegments)
+        IReadOnlyList<SurfaceSegment> surfaceSegments, IReadOnlyList<SurfaceSegment> smoothnessSegments)
+    {
+        var (surfaceTotal, surfaceMax) = SumBadSegments(surfaceSegments, SurfaceClassifier.IsUnpaved);
+        var (smoothnessTotal, smoothnessMax) = SumBadSegments(smoothnessSegments, SurfaceClassifier.IsBadSmoothness);
+        return (surfaceTotal + smoothnessTotal, Math.Max(surfaceMax, smoothnessMax));
+    }
+
+    private static (double Total, double MaxSegment) SumBadSegments(
+        IReadOnlyList<SurfaceSegment> segments, Func<string, bool> isBad)
     {
         var total = 0.0;
         var maxSegment = 0.0;
-        foreach (var segment in surfaceSegments)
+        foreach (var segment in segments)
         {
-            if (!SurfaceClassifier.IsUnpaved(segment.Surface))
+            if (!isBad(segment.Surface))
                 continue;
             var length = PolylineMath.TotalLengthMeters(segment.Geometry);
             total += length;

@@ -89,14 +89,14 @@
   margin: 0.25rem 0 0.75rem;
 }
 
-.blocked-areas-list {
+.point-list {
   list-style: none;
   margin: 0.25rem 0;
   padding: 0.4rem;
   font-size: 0.8rem;
 }
 
-.blocked-areas-list li {
+.point-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -104,7 +104,7 @@
   padding: 0.2rem 0;
 }
 
-.blocked-areas-list button {
+.point-list button {
   font-size: 0.75rem;
   cursor: pointer;
 }

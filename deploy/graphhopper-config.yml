@@ -2,7 +2,7 @@ graphhopper:
   datareader.file: ./data/sportforum-60km.osm.pbf
   graph.location: ./graph-cache
   import.osm.ignored_highways: ""
-  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope,bike_access,urban_density,racingbike_access,racingbike_average_speed,racingbike_priority,bike_network,mtb_rating,hike_rating,bike_road_access
+  graph.encoded_values: road_class,surface,smoothness,road_environment,max_speed,average_slope,bike_access,urban_density,racingbike_access,racingbike_average_speed,racingbike_priority,bike_network,mtb_rating,hike_rating,bike_road_access
   # Ohne explizites threads>=1 stuerzt der Import ab (ForkJoinPool mit parallelism=0 wirft
   # IllegalArgumentException) - GraphHopper hat hierfuer keinen brauchbaren Default.
   graph.urban_density.threads: 4
@@ -72,6 +72,16 @@ graphhopper:
           # nicht abgewertet - siehe SurfaceClassifier.IsUnpaved (Domain) fuer dieselbe
           # Denyliste-Begruendung.
           - if: "surface == UNPAVED || surface == COMPACTED || surface == FINE_GRAVEL || surface == GRAVEL || surface == GROUND || surface == DIRT || surface == GRASS || surface == SAND || surface == COBBLESTONE"
+            multiply_by: "0.5"
+          # Wie die Untergrund-Abwertung oben, aber ueber "smoothness" statt "surface" - faengt
+          # rissigen/holprigen Belag ab, der (noch) gar kein schlechtes surface-Tag traegt (z.B.
+          # alter Asphalt). Ueberschneidet sich mit surface=sett/cobblestone (die haben fast immer
+          # auch smoothness=bad) - GraphHopper multipliziert alle zutreffenden priority-Regeln
+          # miteinander, ein Weg mit BEIDEN Merkmalen wird also 0.5*0.5=0.25 statt nur 0.5
+          # abgewertet. Bewusst in Kauf genommen (ein doppelt schlechter Weg SOLL staerker
+          # abgewertet werden), siehe CONCEPT.md Abschnitt 6.19 und
+          # SurfaceClassifier.IsBadSmoothness (Domain).
+          - if: "smoothness == BAD || smoothness == VERY_BAD || smoothness == HORRIBLE || smoothness == VERY_HORRIBLE || smoothness == IMPASSABLE"
             multiply_by: "0.5"
         speed:
           # Bewusst NICHT racingbike_average_speed uebernommen: unsere eigene Zeitschaetzung

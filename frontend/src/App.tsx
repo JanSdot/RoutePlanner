@@ -50,6 +50,7 @@ export default function App() {
   const [maxDisruptiveJunctions, setMaxDisruptiveJunctions] = useState("");
   const [maxRouteVariantAttempts, setMaxRouteVariantAttempts] = useState("");
   const [blockedAreas, setBlockedAreas] = useState<BlockedArea[]>([]);
+  const [requiredPoints, setRequiredPoints] = useState<GeoPoint[]>([]);
 
   function addBlockedArea(area: BlockedArea) {
     setBlockedAreas((prev) => [...prev, area]);
@@ -57,6 +58,14 @@ export default function App() {
 
   function removeBlockedArea(index: number) {
     setBlockedAreas((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function addRequiredPoint(point: GeoPoint) {
+    setRequiredPoints((prev) => [...prev, point]);
+  }
+
+  function removeRequiredPoint(index: number) {
+    setRequiredPoints((prev) => prev.filter((_, i) => i !== index));
   }
 
   const [inputMode, setInputMode] = useState<InputMode>("file");
@@ -98,6 +107,7 @@ export default function App() {
         maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
         maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
         blockedAreas,
+        requiredPoints,
         fitFile: file,
       });
       setRouteResult(result);
@@ -125,6 +135,7 @@ export default function App() {
         maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
         maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
         blockedAreas,
+        requiredPoints,
         fitFile: file,
       });
       downloadBlob(blob, "trainingsroute.gpx");
@@ -147,7 +158,10 @@ export default function App() {
               value={startPoint ? `${startPoint.lat.toFixed(5)}, ${startPoint.lon.toFixed(5)}` : "auf Karte klicken"}
             />
           </label>
-          <p className="hint">Auf die Karte klicken, um den Startpunkt zu setzen oder einen Abschnitt zu sperren.</p>
+          <p className="hint">
+            Auf die Karte klicken, um den Startpunkt zu setzen, einen Punkt in die Route
+            einzuschließen oder einen Abschnitt zu sperren.
+          </p>
 
           <div className="mode-tabs">
             <button
@@ -263,10 +277,26 @@ export default function App() {
             </label>
           </fieldset>
 
+          {requiredPoints.length > 0 && (
+            <fieldset>
+              <legend>Pflicht-Wegpunkte</legend>
+              <ul className="point-list">
+                {requiredPoints.map((point, i) => (
+                  <li key={i}>
+                    {point.lat.toFixed(5)}, {point.lon.toFixed(5)}
+                    <button type="button" onClick={() => removeRequiredPoint(i)}>
+                      Entfernen
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </fieldset>
+          )}
+
           {blockedAreas.length > 0 && (
             <fieldset>
               <legend>Gesperrte Abschnitte</legend>
-              <ul className="blocked-areas-list">
+              <ul className="point-list">
                 {blockedAreas.map((area, i) => (
                   <li key={i}>
                     {area.lat.toFixed(5)}, {area.lon.toFixed(5)} ({area.radiusMeters} m)
@@ -341,6 +371,8 @@ export default function App() {
           surfaceSegments={routeResult?.surfaceSegments ?? null}
           blockedAreas={blockedAreas}
           onAddBlockedArea={addBlockedArea}
+          requiredPoints={requiredPoints}
+          onAddRequiredPoint={addRequiredPoint}
         />
       </main>
     </div>

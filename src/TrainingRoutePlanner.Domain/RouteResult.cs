@@ -17,11 +17,13 @@ public sealed class RouteSegment
     public required IReadOnlyList<GeoPoint> Geometry { get; init; }
 }
 
-/// <summary>Ein Abschnitt der finalen Route mit einheitlichem Strassenbelag (OSM
-/// <c>surface</c>-Tag via GraphHopper <c>path_details</c>), fuer die Kartenanzeige - siehe
-/// CONCEPT.md Abschnitt 6.8. Unabhaengig von <see cref="RouteSegment"/>: deckt die GESAMTE
-/// Route lueckenlos ab (nicht nur Trainings-Intervalle) und ist ein reines Anzeige-Feature,
-/// kein Eingang in die Korridor-/Streckenbewertung.</summary>
+/// <summary>Ein Abschnitt der finalen Route mit einheitlichem Wert eines GraphHopper
+/// <c>path_details</c>-Merkmals (OSM <c>surface</c> ODER <c>smoothness</c>-Tag), fuer die
+/// Kartenanzeige - siehe CONCEPT.md Abschnitt 6.8. Unabhaengig von <see cref="RouteSegment"/>:
+/// deckt die GESAMTE Route lueckenlos ab (nicht nur Trainings-Intervalle). Anders als der
+/// urspruengliche Kommentar hier nahelegte, ist das inzwischen KEIN reines Anzeige-Feature mehr:
+/// RouteConstructionService.EvaluateUnpavedSurfaces nutzt sowohl Oberflaechen- als auch
+/// Smoothness-Segmente auch fuer die Untergrund-Vermeidungs-Grenzwerte (siehe CONCEPT.md 6.19).</summary>
 public sealed class SurfaceSegment
 {
     public required string Surface { get; init; }
@@ -36,4 +38,9 @@ public sealed class RouteResult
     public required IReadOnlyList<RouteWarning> Warnings { get; init; }
     public required IReadOnlyList<RouteSegment> Segments { get; init; }
     public required IReadOnlyList<SurfaceSegment> SurfaceSegments { get; init; }
+
+    /// <summary>Wie SurfaceSegments, aber ueber das <c>smoothness</c>-Tag statt <c>surface</c> -
+    /// siehe SurfaceClassifier.IsBadSmoothness und CONCEPT.md 6.19. Nicht fuer die Kartenanzeige
+    /// gedacht (kein Frontend-Feature dafuer), nur Eingang in die Untergrund-Vermeidung.</summary>
+    public required IReadOnlyList<SurfaceSegment> SmoothnessSegments { get; init; }
 }

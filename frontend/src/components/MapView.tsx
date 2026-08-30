@@ -62,6 +62,8 @@ interface MapViewProps {
   surfaceSegments: SurfaceSegment[] | null;
   blockedAreas: BlockedArea[];
   onAddBlockedArea: (area: BlockedArea) => void;
+  requiredPoints: GeoPoint[];
+  onAddRequiredPoint: (point: GeoPoint) => void;
 }
 
 export function MapView({
@@ -72,6 +74,8 @@ export function MapView({
   surfaceSegments,
   blockedAreas,
   onAddBlockedArea,
+  requiredPoints,
+  onAddRequiredPoint,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -80,6 +84,8 @@ export function MapView({
   onStartPointChangeRef.current = onStartPointChange;
   const onAddBlockedAreaRef = useRef(onAddBlockedArea);
   onAddBlockedAreaRef.current = onAddBlockedArea;
+  const onAddRequiredPointRef = useRef(onAddRequiredPoint);
+  onAddRequiredPointRef.current = onAddRequiredPoint;
   // MapLibre's "load" event fires exactly once per map instance. isStyleLoaded() can also
   // transiently report false during unrelated tile activity long after the initial load, so
   // neither is safe to re-check on every route update - track it ourselves instead.
@@ -101,7 +107,8 @@ export function MapView({
     });
 
     // Klick auf die Karte setzt nicht mehr direkt den Startpunkt, sondern zeigt eine
-    // Mini-Auswahl (Startpunkt setzen / Abschnitt hier sperren) - siehe CONCEPT.md 6.18.
+    // Mini-Auswahl (Startpunkt setzen / Abschnitt hier sperren / Punkt einschließen) - siehe
+    // CONCEPT.md 6.18/6.19.
     map.on("click", (e) => {
       const { lat, lng } = e.lngLat;
       const popup = new Popup({ closeButton: true, closeOnClick: true, maxWidth: "none" })
@@ -109,6 +116,7 @@ export function MapView({
         .setHTML(
           '<div style="display:flex;flex-direction:column;gap:4px;min-width:200px">' +
             '<button type="button" data-action="start" style="padding:6px 10px;cursor:pointer">Startpunkt setzen</button>' +
+            '<button type="button" data-action="require" style="padding:6px 10px;cursor:pointer;color:#16a34a">Diesen Punkt in die Route einschließen</button>' +
             '<button type="button" data-action="block" style="padding:6px 10px;cursor:pointer;color:#dc2626">Abschnitt hier sperren</button>' +
           "</div>",
         )
@@ -117,6 +125,10 @@ export function MapView({
       const el = popup.getElement();
       el.querySelector('[data-action="start"]')?.addEventListener("click", () => {
         onStartPointChangeRef.current({ lat, lon: lng });
+        popup.remove();
+      });
+      el.querySelector('[data-action="require"]')?.addEventListener("click", () => {
+        onAddRequiredPointRef.current({ lat, lon: lng });
         popup.remove();
       });
       el.querySelector('[data-action="block"]')?.addEventListener("click", () => {
@@ -194,6 +206,45 @@ export function MapView({
       map.once("load", applyBlockedAreas);
     }
   }, [blockedAreas]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const applyRequiredPoints = () => {
+      const geojson: FeatureCollection<Point> = {
+        type: "FeatureCollection",
+        features: requiredPoints.map((p) => ({
+          type: "Feature",
+          properties: {},
+          geometry: { type: "Point", coordinates: [p.lon, p.lat] },
+        })),
+      };
+      const existing = map.getSource("required-points") as GeoJSONSource | undefined;
+      if (existing) {
+        existing.setData(geojson);
+      } else {
+        map.addSource("required-points", { type: "geojson", data: geojson });
+        map.addLayer({
+          id: "required-points-circle",
+          type: "circle",
+          source: "required-points",
+          paint: {
+            "circle-radius": 8,
+            "circle-color": "#16a34a",
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 2,
+          },
+        });
+      }
+    };
+
+    if (styleReadyRef.current) {
+      applyRequiredPoints();
+    } else {
+      map.once("load", applyRequiredPoints);
+    }
+  }, [requiredPoints]);
 
   useEffect(() => {
     const map = mapRef.current;

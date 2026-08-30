@@ -30,6 +30,9 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   if (input.blockedAreas.length > 0) {
     data.append("blockedAreas", JSON.stringify(input.blockedAreas));
   }
+  if (input.requiredPoints.length > 0) {
+    data.append("requiredPoints", JSON.stringify(input.requiredPoints));
+  }
   data.append("format", format);
   return data;
 }

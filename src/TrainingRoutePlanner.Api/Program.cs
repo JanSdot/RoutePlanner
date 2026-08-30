@@ -182,6 +182,24 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         }
     }
 
+    // Analog zu ParseBlockedAreas - siehe RouteRequest.RequiredPoints (CONCEPT.md 6.19).
+    List<GeoPoint> ParseRequiredPoints()
+    {
+        var raw = form["requiredPoints"].ToString();
+        if (string.IsNullOrWhiteSpace(raw))
+            return [];
+        try
+        {
+            var dtos = JsonSerializer.Deserialize<List<RequiredPointDto>>(raw, blockedAreaJsonOptions)
+                ?? throw new ArgumentException("Feld 'requiredPoints' ist kein gueltiges JSON-Array.");
+            return dtos.Select(d => new GeoPoint(d.Lat, d.Lon)).ToList();
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException($"Feld 'requiredPoints' konnte nicht gelesen werden: {ex.Message}");
+        }
+    }
+
     RiderProfile rider;
     GeoPoint start;
     double maxApproachMinutes;
@@ -192,6 +210,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
     int? maxDisruptiveJunctions;
     int? maxRouteVariantAttempts;
     List<BlockedArea> blockedAreas;
+    List<GeoPoint> requiredPoints;
     try
     {
         rider = new RiderProfile
@@ -211,6 +230,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         maxDisruptiveJunctions = ParseOptionalNullableInt("maxDisruptiveJunctions");
         maxRouteVariantAttempts = ParseOptionalNullableInt("maxRouteVariantAttempts");
         blockedAreas = ParseBlockedAreas();
+        requiredPoints = ParseRequiredPoints();
     }
     catch (ArgumentException ex)
     {
@@ -241,6 +261,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         MaxDisruptiveJunctions = maxDisruptiveJunctions,
         MaxRouteVariantAttempts = maxRouteVariantAttempts,
         BlockedAreas = blockedAreas,
+        RequiredPoints = requiredPoints,
     };
 
     try
@@ -267,3 +288,6 @@ app.Run();
 // direkt BlockedArea/GeoPoint, da deren Konstruktor-Parameternamen nicht 1:1 zu einer
 // nutzerfreundlichen {lat, lon, radiusMeters}-Form passen.
 internal sealed record BlockedAreaDto(double Lat, double Lon, double RadiusMeters);
+
+// Analog zu BlockedAreaDto, siehe RouteRequest.RequiredPoints.
+internal sealed record RequiredPointDto(double Lat, double Lon);

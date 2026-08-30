@@ -81,6 +81,53 @@ internal static class PolylineMath
         return (end.Elevation.Value - start.Elevation.Value) / horizontalDistance;
     }
 
+    /// <summary>Projiziert einen Punkt auf die naeheste Stelle der Route und gibt die
+    /// kumulierte Distanz vom Routenanfang bis zu dieser Projektion zurueck - genutzt, um
+    /// Pflicht-Wegpunkte (RouteRequest.RequiredPoints) in der richtigen Reihenfolge zwischen
+    /// die Korridor-Wegpunkte einzusortieren (siehe RouteConstructionService, CONCEPT.md 6.19).
+    /// Flache Grad/Meter-Naeherung reicht fuer die kurzen Segmentlaengen einer
+    /// Rundtour-Grobform voellig aus (wie schon bei BlockedArea-Kreisen in GraphHopperClient).</summary>
+    public static double NearestPointDistanceAlongMeters(IReadOnlyList<GeoPoint> geometry, GeoPoint point)
+    {
+        if (geometry.Count < 2)
+            return 0.0;
+
+        var bestDistanceAlong = 0.0;
+        var bestDistanceSq = double.MaxValue;
+        var accumulated = 0.0;
+        var metersPerDegreeLat = 111_320.0;
+        var metersPerDegreeLon = metersPerDegreeLat * Math.Cos(point.Lat * Math.PI / 180.0);
+
+        for (var i = 1; i < geometry.Count; i++)
+        {
+            var a = geometry[i - 1];
+            var b = geometry[i];
+            var segmentLength = HaversineMeters(a, b);
+
+            // Lokale Meter-Koordinaten relativ zum Zielpunkt (numerisch stabiler als absolute
+            // Lat/Lon-Werte und fuer diese kurzen Distanzen ausreichend genau).
+            var ax = (a.Lon - point.Lon) * metersPerDegreeLon;
+            var ay = (a.Lat - point.Lat) * metersPerDegreeLat;
+            var bx = (b.Lon - point.Lon) * metersPerDegreeLon;
+            var by = (b.Lat - point.Lat) * metersPerDegreeLat;
+            var abx = bx - ax;
+            var aby = by - ay;
+            var abLengthSq = abx * abx + aby * aby;
+            var t = abLengthSq <= 0 ? 0.0 : Math.Clamp((-ax * abx - ay * aby) / abLengthSq, 0.0, 1.0);
+            var closestX = ax + t * abx;
+            var closestY = ay + t * aby;
+            var distanceSq = closestX * closestX + closestY * closestY;
+
+            if (distanceSq < bestDistanceSq)
+            {
+                bestDistanceSq = distanceSq;
+                bestDistanceAlong = accumulated + t * segmentLength;
+            }
+            accumulated += segmentLength;
+        }
+        return bestDistanceAlong;
+    }
+
     public static double BearingDegrees(GeoPoint from, GeoPoint to)
     {
         var phi1 = from.Lat * Math.PI / 180.0;

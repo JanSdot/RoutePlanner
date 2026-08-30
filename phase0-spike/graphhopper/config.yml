@@ -2,7 +2,7 @@ graphhopper:
   datareader.file: ../data/sportforum-60km.osm.pbf
   graph.location: ./graph-cache
   import.osm.ignored_highways: ""
-  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope,bike_access,urban_density,racingbike_access,racingbike_average_speed,racingbike_priority,bike_network,mtb_rating,hike_rating,bike_road_access
+  graph.encoded_values: road_class,surface,smoothness,road_environment,max_speed,average_slope,bike_access,urban_density,racingbike_access,racingbike_average_speed,racingbike_priority,bike_network,mtb_rating,hike_rating,bike_road_access
   # Ohne explizites threads>=1 stuerzt der Import ab (ForkJoinPool mit parallelism=0 wirft
   # IllegalArgumentException) - GraphHopper hat hierfuer keinen brauchbaren Default.
   graph.urban_density.threads: 4
@@ -51,6 +51,10 @@ graphhopper:
             multiply_by: "0.5"
           # Rauen/unbefestigten Untergrund abwerten - siehe CONCEPT.md Abschnitt 6.12.
           - if: "surface == UNPAVED || surface == COMPACTED || surface == FINE_GRAVEL || surface == GRAVEL || surface == GROUND || surface == DIRT || surface == GRASS || surface == SAND || surface == COBBLESTONE"
+            multiply_by: "0.5"
+          # smoothness=bad/... wie unbefestigt behandeln - siehe deploy/graphhopper-config.yml
+          # und CONCEPT.md Abschnitt 6.19.
+          - if: "smoothness == BAD || smoothness == VERY_BAD || smoothness == HORRIBLE || smoothness == VERY_HORRIBLE || smoothness == IMPASSABLE"
             multiply_by: "0.5"
         speed:
           # Bewusst NICHT racingbike_average_speed - siehe deploy/graphhopper-config.yml fuer

@@ -22,7 +22,8 @@ public class GraphHopperClientTests
                 [13.43, 52.53, 13.0]
               ] },
               "details": {
-                "surface": [ [0, 1, "asphalt"], [1, 3, "gravel"] ]
+                "surface": [ [0, 1, "asphalt"], [1, 3, "gravel"] ],
+                "smoothness": [ [0, 3, "good"] ]
               }
             }
           ]
@@ -72,6 +73,18 @@ public class GraphHopperClientTests
     }
 
     [Fact]
+    public async Task RoundTripAsync_ParsesSmoothnessSegmentsFromPathDetails()
+    {
+        var (client, _) = CreateClient();
+
+        var route = await client.RoundTripAsync(new GeoPoint(52.50, 13.40), 400, seed: 1, blockedAreas: []);
+
+        var segment = Assert.Single(route.SmoothnessSegments);
+        Assert.Equal("good", segment.Surface);
+        Assert.Equal(4, segment.Geometry.Count); // Indizes 0..3 inklusive
+    }
+
+    [Fact]
     public async Task RoundTripAsync_MissingDetailsProducesNoSurfaceSegments()
     {
         const string json = """
@@ -100,6 +113,19 @@ public class GraphHopperClientTests
         await client.RoundTripAsync(new GeoPoint(52.50, 13.40), 400, seed: 1, blockedAreas: []);
 
         Assert.DoesNotContain("custom_model", handler.LastRequestBody);
+    }
+
+    [Fact]
+    public async Task RoundTripAsync_RequestsBothSurfaceAndSmoothnessPathDetails()
+    {
+        var (client, handler) = CreateClient();
+
+        await client.RoundTripAsync(new GeoPoint(52.50, 13.40), 400, seed: 1, blockedAreas: []);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(handler.LastRequestBody!);
+        var details = doc.RootElement.GetProperty("details").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Contains("surface", details);
+        Assert.Contains("smoothness", details);
     }
 
     [Fact]
