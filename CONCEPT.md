@@ -147,6 +147,26 @@ Eskalationskette, falls kein Korridor Score-Schwelle **und** benötigte Länge e
 Kein harter Fehlschlag außer in Extremfällen; der Nutzer sieht immer ehrlich, wenn ein Kompromiss
 gemacht wurde.
 
+## 4.4 Anfahrt/Abfahrt zur eigentlichen Trainingsstrecke
+
+Bei einem Startpunkt in einer dicht bebauten Stadt (z. B. Berlin) existieren in unmittelbarer
+Nähe vermutlich keine ampelfreien Vorfahrtsstraßen — geeignete Korridore liegen ggf. erst einige
+Fahrminuten außerhalb. Dafür gibt es einen neuen Parameter:
+
+- **Max. Anfahrtszeit** (Default z. B. 30 min, konfigurierbar im Nutzerprofil/pro Anfrage, kein
+  hartkodierter Wert) — begrenzt, wie weit der Korridor-Suchradius vom Startpunkt entfernt sein
+  darf. Gilt als **Gesamtbudget für Hin- und Rückweg zusammen**, nicht pro Richtung einzeln.
+
+**Budget-Absorption:** Ruhige Trainingsblöcke (Warmup/GA1/Erholung) haben ohnehin eine sehr hohe
+Score-Toleranz und können auf jeder Straße gefahren werden, auch mitten durch die Stadt. Ihre
+Distanz wird deshalb automatisch als "Budget" für die Anfahrt/Abfahrt verwendet, statt die Anfahrt
+immer als reine Zusatzzeit zu behandeln — die Fahrt aus der Stadt heraus ist dann einfach Teil des
+ohnehin geplanten ruhigen Streckenanteils. Nur wenn dieses Budget nicht ausreicht (z. B. Plan hat
+kaum ruhige Blöcke, oder die Stadt ist zu groß), kommt zusätzliche Zeit oben drauf — begrenzt durch
+die max. Anfahrtszeit, und transparent gekennzeichnet (analog zum Korridor-Fallback aus 4.3: "Route
+ist X min länger als der reine Trainingsplan, weil die nächste geeignete Strecke soweit entfernt
+liegt").
+
 ## 5. Trainings-Input (MVP)
 
 - **Nur FIT-Import** für den Start (kein manueller Block-Builder in v1). Ein FIT-Workout-File
