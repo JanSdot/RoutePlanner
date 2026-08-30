@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Map as MapLibreMap, Marker, LngLatBounds } from "maplibre-gl";
 import type { StyleSpecification, GeoJSONSource, ExpressionSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import type { FeatureCollection, LineString } from "geojson";
 import type { GeoPoint, RouteSegment } from "../types";
 
 const OSM_RASTER_STYLE: StyleSpecification = {
@@ -112,7 +113,7 @@ export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSe
       // Basis-Route (blau, duenn) - immer die volle Strecke, darauf liegen die
       // hervorgehobenen Intervall-Segmente aus dem Trainingsplan.
       const existingRouteSource = map.getSource("route") as GeoJSONSource | undefined;
-      const routeGeojson: GeoJSON.FeatureCollection<GeoJSON.LineString> = {
+      const routeGeojson: FeatureCollection<LineString> = {
         type: "FeatureCollection",
         features: routeGeometry && routeGeometry.length > 0
           ? [{
@@ -136,7 +137,7 @@ export function MapView({ startPoint, onStartPointChange, routeGeometry, routeSe
       }
 
       const segments = routeSegments ?? [];
-      const segmentsGeojson: GeoJSON.FeatureCollection<GeoJSON.LineString> = {
+      const segmentsGeojson: FeatureCollection<LineString> = {
         type: "FeatureCollection",
         features: segments.map((s) => ({
           type: "Feature",
