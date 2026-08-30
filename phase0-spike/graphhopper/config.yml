@@ -1,0 +1,26 @@
+graphhopper:
+  datareader.file: ../data/sportforum-60km.osm.pbf
+  graph.location: ./graph-cache
+  import.osm.ignored_highways: ""
+  graph.encoded_values: road_class,surface,road_environment,max_speed,average_slope
+  graph.elevation.provider: srtm
+  graph.elevation.cache_dir: ./elevation-cache
+  graph.elevation.dataaccess: MMAP
+
+  profiles:
+    - name: bike
+      custom_model:
+        priority:
+          - if: "road_class == MOTORWAY"
+            multiply_by: "0"
+        speed:
+          - if: "true"
+            limit_to: "25"
+
+server:
+  application_connectors:
+    - type: http
+      port: 8989
+  admin_connectors:
+    - type: http
+      port: 8990

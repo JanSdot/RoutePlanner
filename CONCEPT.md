@@ -223,6 +223,44 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 - A-nach-B-Routing (statt nur Rundkurs)
 - Windmodellierung (aktuell bewusst ignoriert)
 
+## 6.1 Phase 0 — Ergebnis (durchgeführt)
+
+**Startpunkt:** Sportforum Berlin (52.5426187, 13.4763778), Radius 60 km (Berlin + Brandenburg,
+via Geofabrik-Extrakte, mit `osmium` auf die Bounding Box zugeschnitten).
+
+**Korridor-Machbarkeit:** Validiert. Ein Python-Spike-Skript (`phase0-spike/scripts/corridor_check.py`,
+nutzt pyosmium statt des defekten `pyrosm`/`pyrobuf`) hat den Straßengraphen aufgebaut, Korridore
+zwischen harten Ausschluss-Knoten extrahiert und mit der Sliding-Window-Technik aus Abschnitt 4.1
+geprüft. Ergebnis:
+
+| Zonen-Schwelle | ≥1000 m | ≥2000 m | ≥3000 m | längster Treffer |
+|---|---|---|---|---|
+| VO2max/Sprint (~1) | 989 | 434 | 262 | 54.851 m |
+| SB (~1.5) | 1217 | 482 | 302 | 54.851 m |
+| EB (~3) | 1508 | 572 | 348 | 54.851 m |
+
+Selbst bei der strengsten Schwelle (praktisch keine Unterbrechung) existieren im 60-km-Umkreis
+Hunderte geeignete Korridore — die Kernannahme des Projekts ist für diese Region bestätigt.
+
+**GraphHopper-Fähigkeiten:** Validiert. `round_trip`-Algorithmus liefert eine Schleife nahe der
+Zieldistanz (angefragt 15 km → 13,2 km geliefert); Multi-Waypoint-Routing führt korrekt durch eine
+vorgegebene Punktreihenfolge (4 Wegpunkte, 33,5 km Gesamtroute). Wichtig: `round_trip` ist mit
+Contraction-Hierarchies-Vorberechnung (CH) nicht kompatibel — für Phase 1 muss das Profil ohne CH
+(oder mit separatem Nicht-CH-Profil) betrieben werden.
+
+**Zwei Implementierungsfehler während des Spikes gefunden und behoben** (relevant für Phase 1):
+1. Korridor-Extraktion brach ursprünglich an jeder echten Kreuzung ab statt nur an harten
+   Ausschluss-Knoten (Ampel/Stopp) — widersprach dem Konzept aus Abschnitt 4.1. Behoben durch
+   Fortsetzen durch weiche Kreuzungen mit einer "Geradeaus"-Heuristik (kleinste Winkeländerung)
+   bei Abzweigungen.
+2. Die Sliding-Window-Funktion hatte einen Off-by-one-Fehler: bei groben Kantenlängen (lange
+   Landstraßen mit wenigen Stützpunkten) konnte sie ein gültiges Fenster überspringen. Behoben
+   durch Lookahead vor dem Verschieben des linken Zeigers.
+
+**Go/No-Go:** **Go.** Ansatz trägt für Phase 1.
+
+**Fundstellen:** `phase0-spike/` (nicht Teil der C#-Produktionspipeline, Wegwerf-Code).
+
 ## 7. Offene Punkte
 
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte, die

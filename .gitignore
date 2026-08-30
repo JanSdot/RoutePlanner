@@ -10,3 +10,13 @@ build/
 
 # OS
 .DS_Store
+
+# Phase 0 Spike: grosse Binaerdaten/Caches, nicht versioniert
+phase0-spike/data/*.pbf
+phase0-spike/data/*.pkl
+phase0-spike/venv/
+phase0-spike/graphhopper/*.jar
+phase0-spike/graphhopper/graph-cache/
+phase0-spike/graphhopper/elevation-cache/
+phase0-spike/graphhopper/graphhopper.log
+.claude/
