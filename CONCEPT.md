@@ -275,6 +275,16 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
   Ruhezustand (Scale-to-Zero) gegangen - der erste Request danach lief in einen
   Verbindungs-Timeout, ein Retry weckte die Datenbank und lief danach normal durch (kein Bug,
   erwartetes Neon-Verhalten bei Inaktivität).
+
+  **Login-UI (2026-08-30, durchgeführt):** Neue `AuthPanel`-Komponente oben in der Sidebar
+  (E-Mail/Passwort, Anmelden/Registrieren, bzw. "Angemeldet als ..."/Abmelden). Token liegt im
+  `localStorage` und wird beim Laden gegen `/auth/me` validiert (verhindert stillschweigendes
+  Vertrauen in ein abgelaufenes Token, ohne bei jedem Reload einen erneuten Login zu erzwingen).
+  Bewusst KEIN hartes Login-Gate - solange Stufe 3 (persistierte, pro-Nutzer geltende
+  Sperr-Bereiche) nicht existiert, gibt es nichts, das ein eingeloggter Zustand tatsaechlich
+  freischalten wuerde, die Routenplanung bleibt fuer alle nutzbar. Live im echten Chrome
+  bestaetigt: Registrierung + Auto-Login, Session uebersteht einen Reload, Abmelden, erneutes
+  Login mit bestehenden Zugangsdaten, und die Fehleranzeige bei falschem Passwort.
 - A-nach-B-Routing (statt nur Rundkurs)
 - **Windmodellierung** (geplant, noch nicht umgesetzt) - Scope bewusst auf die Zeitschätzung
   begrenzt, die Streckenführung selbst bleibt unverändert. Datenquelle: Open-Meteo (kostenlos,
