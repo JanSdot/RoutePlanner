@@ -41,7 +41,11 @@
   margin: 0 0 1rem;
 }
 
-.sidebar form label {
+/* .page-view (ProfilePage/ClubPage) rendert - anders als das Hauptformular - AUSSERHALB eines
+   <form>, aber innerhalb .sidebar, daher hier explizit mitgenommen statt eines zweiten,
+   dupliziertem Regelsatzes wie bei .auth-panel unten. */
+.sidebar form label,
+.sidebar .page-view label {
   display: block;
   font-size: 0.85rem;
   font-weight: 600;
@@ -60,7 +64,9 @@
 }
 
 .sidebar form input,
-.sidebar form select {
+.sidebar form select,
+.sidebar .page-view input,
+.sidebar .page-view select {
   display: block;
   width: 100%;
   box-sizing: border-box;
@@ -84,7 +90,8 @@
   padding: 0 0.4rem;
 }
 
-.sidebar button[type="submit"] {
+.sidebar button[type="submit"],
+.page-view > button {
   width: 100%;
   padding: 0.6rem;
   background: #2563eb;
@@ -160,6 +167,11 @@
 .error {
   color: #dc2626;
   font-size: 0.85rem;
+}
+
+.page-view h2 {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
 }
 
 .hint {

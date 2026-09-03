@@ -319,6 +319,313 @@ app.MapPut("/profile", async (RiderProfileDto request, ClaimsPrincipal principal
 .RequireAuthorization()
 .WithName("SaveProfile");
 
+// Verein-Verantwortlicher: approved Mitgliedschaft MIT IsAdmin=true. Ein Verein kann mehrere
+// Verantwortliche haben (Nutzer-Entscheidung), daher kein Alleinstellungsmerkmal wie "Ersteller".
+async Task<bool> IsClubAdminAsync(WattLoopDbContext db, Guid clubId, string userId) =>
+    await db.ClubMemberships.AnyAsync(m =>
+        m.ClubId == clubId && m.UserId == userId && m.Status == ClubMembershipStatus.Approved && m.IsAdmin);
+
+// Vereine (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine", Stufe 2) - ein
+// Nutzer ist zu jedem Zeitpunkt Mitglied/Anwaerter in hoechstens einem Verein (siehe den
+// eindeutigen Index auf ClubMembership.UserId), Beitritt braucht die Freigabe eines
+// Verantwortlichen.
+app.MapPost("/clubs", async (CreateClubRequest request, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Name))
+        return Results.BadRequest("Name darf nicht leer sein.");
+
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    if (await db.ClubMemberships.AnyAsync(m => m.UserId == userId))
+        return Results.Conflict("Du bist bereits Mitglied oder Anwärter eines Vereins.");
+
+    var club = new Club { Id = Guid.NewGuid(), Name = request.Name.Trim(), CreatedAt = DateTimeOffset.UtcNow };
+    db.Clubs.Add(club);
+    // Der Ersteller wird sofort Verantwortlicher - ohne diesen Schritt gaebe es keinen einzigen
+    // Verantwortlichen, der jemals einen Beitritt freigeben koennte.
+    db.ClubMemberships.Add(new ClubMembership
+    {
+        Id = Guid.NewGuid(),
+        ClubId = club.Id,
+        UserId = userId,
+        Status = ClubMembershipStatus.Approved,
+        IsAdmin = true,
+        RequestedAt = DateTimeOffset.UtcNow,
+        DecidedAt = DateTimeOffset.UtcNow,
+        DecidedByUserId = userId,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new ClubDto(club.Id, club.Name, MemberCount: 1));
+})
+.RequireAuthorization()
+.WithName("CreateClub");
+
+app.MapGet("/clubs", async (WattLoopDbContext db) =>
+{
+    var clubs = await db.Clubs
+        .Select(c => new ClubDto(c.Id, c.Name, db.ClubMemberships.Count(m => m.ClubId == c.Id && m.Status == ClubMembershipStatus.Approved)))
+        .ToListAsync();
+    return Results.Ok(clubs);
+})
+.RequireAuthorization()
+.WithName("ListClubs");
+
+app.MapGet("/clubs/mine", async (ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var membership = await db.ClubMemberships.FirstOrDefaultAsync(m => m.UserId == userId);
+    if (membership is null)
+        return Results.Ok((ClubMembershipDto?)null);
+
+    var club = await db.Clubs.FindAsync(membership.ClubId);
+    return Results.Ok(new ClubMembershipDto(membership.ClubId, club!.Name, membership.Status.ToString(), membership.IsAdmin));
+})
+.RequireAuthorization()
+.WithName("MyClubMembership");
+
+app.MapPost("/clubs/{clubId:guid}/join", async (Guid clubId, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    if (await db.ClubMemberships.AnyAsync(m => m.UserId == userId))
+        return Results.Conflict("Du bist bereits Mitglied oder Anwärter eines Vereins.");
+    if (!await db.Clubs.AnyAsync(c => c.Id == clubId))
+        return Results.NotFound();
+
+    db.ClubMemberships.Add(new ClubMembership
+    {
+        Id = Guid.NewGuid(),
+        ClubId = clubId,
+        UserId = userId,
+        Status = ClubMembershipStatus.Pending,
+        IsAdmin = false,
+        RequestedAt = DateTimeOffset.UtcNow,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("JoinClub");
+
+app.MapPost("/clubs/{clubId:guid}/leave", async (Guid clubId, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var membership = await db.ClubMemberships.FirstOrDefaultAsync(m => m.ClubId == clubId && m.UserId == userId);
+    if (membership is null)
+        return Results.NotFound();
+
+    db.ClubMemberships.Remove(membership);
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("LeaveClub");
+
+app.MapGet("/clubs/{clubId:guid}/members/pending", async (Guid clubId, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    if (!await IsClubAdminAsync(db, clubId, userId))
+        return Results.Forbid();
+
+    var pending = await (
+        from m in db.ClubMemberships
+        join u in db.Users on m.UserId equals u.Id
+        where m.ClubId == clubId && m.Status == ClubMembershipStatus.Pending
+        select new PendingMemberDto(m.Id, u.Email!, m.RequestedAt))
+        .ToListAsync();
+    return Results.Ok(pending);
+})
+.RequireAuthorization()
+.WithName("PendingClubMembers");
+
+app.MapPost("/clubs/{clubId:guid}/members/{membershipId:guid}/approve", async (Guid clubId, Guid membershipId, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    if (!await IsClubAdminAsync(db, clubId, userId))
+        return Results.Forbid();
+
+    var membership = await db.ClubMemberships.FirstOrDefaultAsync(m => m.Id == membershipId && m.ClubId == clubId);
+    if (membership is null)
+        return Results.NotFound();
+
+    membership.Status = ClubMembershipStatus.Approved;
+    membership.DecidedAt = DateTimeOffset.UtcNow;
+    membership.DecidedByUserId = userId;
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("ApproveClubMember");
+
+app.MapPost("/clubs/{clubId:guid}/members/{membershipId:guid}/reject", async (Guid clubId, Guid membershipId, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    if (!await IsClubAdminAsync(db, clubId, userId))
+        return Results.Forbid();
+
+    var membership = await db.ClubMemberships.FirstOrDefaultAsync(m => m.Id == membershipId && m.ClubId == clubId);
+    if (membership is null)
+        return Results.NotFound();
+
+    db.ClubMemberships.Remove(membership);
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("RejectClubMember");
+
+// Persistierte Sperr-Bereiche (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine",
+// Stufe 3) - Ergaenzung zu den weiterhin rein Request-lokalen BlockedAreas (siehe /route unten,
+// das beide zu einer Liste zusammenfuehrt).
+app.MapGet("/segment-locks/mine", async (ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var locks = await db.SegmentLocks
+        .Where(s => s.OwnerUserId == userId && s.ClubId == null)
+        .Select(s => new SegmentLockDto(s.Id, s.Lat, s.Lon, s.RadiusMeters, s.Status.ToString(), s.CreatedAt))
+        .ToListAsync();
+    return Results.Ok(locks);
+})
+.RequireAuthorization()
+.WithName("MySegmentLocks");
+
+app.MapPost("/segment-locks/personal", async (SegmentLockRequest request, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    // Persoenliche Sperren brauchen keine Freigabe - sofort Active, siehe SegmentLock-Doc.
+    var segmentLock = new SegmentLock
+    {
+        Id = Guid.NewGuid(),
+        OwnerUserId = userId,
+        ClubId = null,
+        Lat = request.Lat,
+        Lon = request.Lon,
+        RadiusMeters = request.RadiusMeters,
+        Status = SegmentLockStatus.Active,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
+    db.SegmentLocks.Add(segmentLock);
+    await db.SaveChangesAsync();
+    return Results.Ok(new SegmentLockDto(segmentLock.Id, segmentLock.Lat, segmentLock.Lon, segmentLock.RadiusMeters, segmentLock.Status.ToString(), segmentLock.CreatedAt));
+})
+.RequireAuthorization()
+.WithName("CreatePersonalSegmentLock");
+
+app.MapPost("/segment-locks/club", async (SegmentLockRequest request, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var membership = await db.ClubMemberships.FirstOrDefaultAsync(m => m.UserId == userId && m.Status == ClubMembershipStatus.Approved);
+    if (membership is null)
+        return Results.Forbid();
+
+    // Vereins-Sperren starten Pending - erst nach Freigabe durch einen Verantwortlichen aktiv
+    // (siehe /segment-locks/{id}/approve).
+    var segmentLock = new SegmentLock
+    {
+        Id = Guid.NewGuid(),
+        OwnerUserId = userId,
+        ClubId = membership.ClubId,
+        Lat = request.Lat,
+        Lon = request.Lon,
+        RadiusMeters = request.RadiusMeters,
+        Status = SegmentLockStatus.Pending,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
+    db.SegmentLocks.Add(segmentLock);
+    await db.SaveChangesAsync();
+    return Results.Ok(new SegmentLockDto(segmentLock.Id, segmentLock.Lat, segmentLock.Lon, segmentLock.RadiusMeters, segmentLock.Status.ToString(), segmentLock.CreatedAt));
+})
+.RequireAuthorization()
+.WithName("ProposeClubSegmentLock");
+
+app.MapDelete("/segment-locks/{id:guid}", async (Guid id, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var segmentLock = await db.SegmentLocks.FindAsync(id);
+    if (segmentLock is null)
+        return Results.NotFound();
+
+    var isOwner = segmentLock.OwnerUserId == userId;
+    var isClubAdmin = segmentLock.ClubId is Guid clubId && await IsClubAdminAsync(db, clubId, userId);
+    if (!isOwner && !isClubAdmin)
+        return Results.Forbid();
+
+    db.SegmentLocks.Remove(segmentLock);
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("DeleteSegmentLock");
+
+app.MapGet("/clubs/{clubId:guid}/segment-locks/pending", async (Guid clubId, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    // Jedes Mitglied darf die Warteschlange EINSEHEN (Transparenz, auch fuer die eigenen
+    // Vorschlaege) - nur das tatsaechliche Freigeben/Ablehnen bleibt Verantwortlichen
+    // vorbehalten (siehe /segment-locks/{id}/approve|reject).
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var isMember = await db.ClubMemberships.AnyAsync(m => m.ClubId == clubId && m.UserId == userId && m.Status == ClubMembershipStatus.Approved);
+    if (!isMember)
+        return Results.Forbid();
+
+    var pending = await db.SegmentLocks
+        .Where(s => s.ClubId == clubId && s.Status == SegmentLockStatus.Pending)
+        .Select(s => new SegmentLockDto(s.Id, s.Lat, s.Lon, s.RadiusMeters, s.Status.ToString(), s.CreatedAt))
+        .ToListAsync();
+    return Results.Ok(pending);
+})
+.RequireAuthorization()
+.WithName("PendingClubSegmentLocks");
+
+app.MapGet("/clubs/{clubId:guid}/segment-locks/active", async (Guid clubId, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var isMember = await db.ClubMemberships.AnyAsync(m => m.ClubId == clubId && m.UserId == userId && m.Status == ClubMembershipStatus.Approved);
+    if (!isMember)
+        return Results.Forbid();
+
+    var active = await db.SegmentLocks
+        .Where(s => s.ClubId == clubId && s.Status == SegmentLockStatus.Active)
+        .Select(s => new SegmentLockDto(s.Id, s.Lat, s.Lon, s.RadiusMeters, s.Status.ToString(), s.CreatedAt))
+        .ToListAsync();
+    return Results.Ok(active);
+})
+.RequireAuthorization()
+.WithName("ActiveClubSegmentLocks");
+
+app.MapPost("/segment-locks/{id:guid}/approve", async (Guid id, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var segmentLock = await db.SegmentLocks.FindAsync(id);
+    if (segmentLock?.ClubId is not Guid clubId)
+        return Results.NotFound();
+    if (!await IsClubAdminAsync(db, clubId, userId))
+        return Results.Forbid();
+
+    segmentLock.Status = SegmentLockStatus.Active;
+    segmentLock.DecidedAt = DateTimeOffset.UtcNow;
+    segmentLock.DecidedByUserId = userId;
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("ApproveClubSegmentLock");
+
+app.MapPost("/segment-locks/{id:guid}/reject", async (Guid id, ClaimsPrincipal principal, WattLoopDbContext db) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var segmentLock = await db.SegmentLocks.FindAsync(id);
+    if (segmentLock?.ClubId is not Guid clubId)
+        return Results.NotFound();
+    if (!await IsClubAdminAsync(db, clubId, userId))
+        return Results.Forbid();
+
+    segmentLock.Status = SegmentLockStatus.Rejected;
+    segmentLock.DecidedAt = DateTimeOffset.UtcNow;
+    segmentLock.DecidedByUserId = userId;
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("RejectClubSegmentLock");
+
 app.MapPost("/workout/build", (List<WorkoutBlockSpec> blocks) =>
 {
     if (blocks.Count == 0)
@@ -342,7 +649,8 @@ app.MapPost("/workout/build", (List<WorkoutBlockSpec> blocks) =>
 .WithName("BuildWorkoutFit");
 
 app.MapPost("/route", async (
-    HttpRequest request, RouteConstructionService routeService, FitWorkoutParser fitParser, IConstructionClosureCache closureCache) =>
+    HttpRequest request, RouteConstructionService routeService, FitWorkoutParser fitParser, IConstructionClosureCache closureCache,
+    ClaimsPrincipal principal, WattLoopDbContext db) =>
 {
     if (!request.HasFormContentType)
         return Results.BadRequest("Erwartet wird multipart/form-data mit fitFile und Profil-Feldern.");
@@ -508,6 +816,22 @@ app.MapPost("/route", async (
         .Where(c => !ignoredConstructionClosureIds.Contains(c.Id))
         .ToList();
 
+    // Persistierte Sperr-Bereiche (Stufe 3, siehe /segment-locks/*) - eigene UND (falls
+    // Mitglied) vom Verein freigegebene gelten automatisch bei JEDER Routenberechnung, genau wie
+    // die vom Nutzer fuer DIESE eine Route gesetzten (rein Request-lokalen) blockedAreas oben.
+    // GraphHopperClient.BuildCustomModel unterscheidet nicht zwischen den Quellen - eine
+    // gesperrte Kreisflaeche bleibt eine gesperrte Kreisflaeche, unabhaengig davon WARUM.
+    var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
+    var myApprovedClubId = await db.ClubMemberships
+        .Where(m => m.UserId == userId && m.Status == ClubMembershipStatus.Approved)
+        .Select(m => (Guid?)m.ClubId)
+        .FirstOrDefaultAsync();
+    var persistedLocks = await db.SegmentLocks
+        .Where(s => s.Status == SegmentLockStatus.Active
+            && ((s.OwnerUserId == userId && s.ClubId == null) || (myApprovedClubId != null && s.ClubId == myApprovedClubId)))
+        .ToListAsync();
+    blockedAreas.AddRange(persistedLocks.Select(s => new BlockedArea(new GeoPoint(s.Lat, s.Lon), s.RadiusMeters)));
+
     var routeRequest = new RouteRequest
     {
         StartPoint = start,
@@ -565,3 +889,15 @@ internal sealed record AuthResponse(string Token, string Email);
 // Siehe GET/PUT /profile - UserRiderProfile (Data) ohne UserId, das kommt aus dem JWT, nicht
 // vom Client.
 internal sealed record RiderProfileDto(double FtpWatts, double WeightKg, double SprintAvgWatts);
+
+// Siehe POST/GET /clubs - Vereine (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/
+// Vereine", Stufe 2).
+internal sealed record CreateClubRequest(string Name);
+internal sealed record ClubDto(Guid Id, string Name, int MemberCount);
+internal sealed record ClubMembershipDto(Guid ClubId, string ClubName, string Status, bool IsAdmin);
+internal sealed record PendingMemberDto(Guid MembershipId, string Email, DateTimeOffset RequestedAt);
+
+// Siehe POST /segment-locks/* - persistierte Sperr-Bereiche (Stufe 3), analog zu
+// BlockedAreaDto, aber mit Id (fuer Loeschen/Freigeben) und Status statt rein Request-lokal.
+internal sealed record SegmentLockRequest(double Lat, double Lon, double RadiusMeters);
+internal sealed record SegmentLockDto(Guid Id, double Lat, double Lon, double RadiusMeters, string Status, DateTimeOffset CreatedAt);

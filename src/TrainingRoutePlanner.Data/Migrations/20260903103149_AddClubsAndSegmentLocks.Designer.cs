@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using TrainingRoutePlanner.Data;
@@ -11,9 +12,11 @@ using TrainingRoutePlanner.Data;
 namespace TrainingRoutePlanner.Data.Migrations
 {
     [DbContext(typeof(WattLoopDbContext))]
-    partial class WattLoopDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260903103149_AddClubsAndSegmentLocks")]
+    partial class AddClubsAndSegmentLocks
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

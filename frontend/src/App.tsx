@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { MapView, colorForSegmentLabel } from "./components/MapView";
+import { MapView, colorForSegmentLabel, DEFAULT_BLOCK_RADIUS_METERS } from "./components/MapView";
 import { WorkoutEditor } from "./components/WorkoutEditor";
 import { AuthPanel } from "./components/AuthPanel";
 import { HelpPanel } from "./components/HelpPanel";
 import { ConstructionClosuresPanel } from "./components/ConstructionClosuresPanel";
+import { ProfilePage } from "./components/ProfilePage";
+import { ClubPage } from "./components/ClubPage";
 import {
   requestRoute,
   requestRouteGpx,
@@ -14,12 +16,20 @@ import {
   fetchProfile,
   saveProfile,
   fetchConstructionClosures,
+  fetchMyClubMembership,
+  fetchMySegmentLocks,
+  fetchActiveClubSegmentLocks,
+  createPersonalSegmentLock,
+  proposeClubSegmentLock,
+  deleteSegmentLock,
 } from "./api";
 import type {
   BlockedArea,
+  ClubMembership,
   ConstructionClosure,
   GeoPoint,
   RouteResult,
+  SegmentLock,
   SegmentReusePreference,
   WorkoutBlockSpec,
 } from "./types";
@@ -63,8 +73,10 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 type InputMode = "file" | "editor";
+type ActiveView = "planner" | "profile" | "club";
 
 export default function App() {
+  const [activeView, setActiveView] = useState<ActiveView>("planner");
   const [startPoint, setStartPoint] = useState<GeoPoint | null>({
     lat: 52.5426187,
     lon: 13.4763778,
@@ -207,6 +219,55 @@ export default function App() {
       .catch(() => {});
   }, [authToken]);
 
+  // Vereine + persistierte Sperr-Bereiche (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/
+  // Auth/Vereine", Stufe 2+3) - eigene UND (bei Vereinsmitgliedschaft) freigegebene Vereins-
+  // Sperren gelten serverseitig ohnehin automatisch bei jeder Routenberechnung (siehe
+  // Program.cs /route); hier nur fuer Kartenanzeige/Sidebar-Liste geladen.
+  const [clubMembership, setClubMembership] = useState<ClubMembership | null>(null);
+  const [segmentLocks, setSegmentLocks] = useState<SegmentLock[]>([]);
+
+  async function loadSegmentLocks(token: string, membership: ClubMembership | null) {
+    const personal = await fetchMySegmentLocks(token).catch(() => []);
+    const club =
+      membership?.status === "Approved" ? await fetchActiveClubSegmentLocks(token, membership.clubId).catch(() => []) : [];
+    setSegmentLocks([...personal, ...club]);
+  }
+
+  useEffect(() => {
+    if (!authToken) return;
+    fetchMyClubMembership(authToken)
+      .then(async (membership) => {
+        setClubMembership(membership);
+        await loadSegmentLocks(authToken, membership);
+      })
+      .catch(() => {});
+  }, [authToken]);
+
+  async function handleClubMembershipChange(membership: ClubMembership | null) {
+    setClubMembership(membership);
+    if (authToken) await loadSegmentLocks(authToken, membership);
+  }
+
+  async function handleCreatePersonalLock(point: GeoPoint) {
+    if (!authToken) return;
+    await createPersonalSegmentLock(authToken, point.lat, point.lon, DEFAULT_BLOCK_RADIUS_METERS);
+    await loadSegmentLocks(authToken, clubMembership);
+  }
+
+  async function handleProposeClubLock(point: GeoPoint) {
+    if (!authToken) return;
+    await proposeClubSegmentLock(authToken, point.lat, point.lon, DEFAULT_BLOCK_RADIUS_METERS);
+    // Neuer Vorschlag ist Pending, taucht also nicht sofort im "active"-Kartenlayer auf - kein
+    // Reload noetig, aber in der Vereins-Seite (ClubPage) unter "Offene Sperr-Vorschläge"
+    // sichtbar, sobald sie erneut geladen wird.
+  }
+
+  async function handleDeleteSegmentLock(id: string) {
+    if (!authToken) return;
+    await deleteSegmentLock(authToken, id);
+    await loadSegmentLocks(authToken, clubMembership);
+  }
+
   const [showJunctions, setShowJunctions] = useState(false);
   const [showConstructionClosures, setShowConstructionClosures] = useState(false);
 
@@ -338,6 +399,38 @@ export default function App() {
           onLogout={handleLogout}
         />
 
+        <nav className="mode-tabs">
+          <button type="button" className={activeView === "planner" ? "active" : ""} onClick={() => setActiveView("planner")}>
+            Route planen
+          </button>
+          <button type="button" className={activeView === "profile" ? "active" : ""} onClick={() => setActiveView("profile")}>
+            Profil
+          </button>
+          <button type="button" className={activeView === "club" ? "active" : ""} onClick={() => setActiveView("club")}>
+            Verein
+          </button>
+        </nav>
+
+        {activeView === "profile" && (
+          <ProfilePage
+            ftpWatts={ftpWatts}
+            weightKg={weightKg}
+            sprintAvgWatts={sprintAvgWatts}
+            onChange={(p) => {
+              setFtpWatts(p.ftpWatts);
+              setWeightKg(p.weightKg);
+              setSprintAvgWatts(p.sprintAvgWatts);
+            }}
+            onSave={() => saveProfile(authToken, { ftpWatts, weightKg, sprintAvgWatts })}
+          />
+        )}
+
+        {activeView === "club" && (
+          <ClubPage authToken={authToken} membership={clubMembership} onMembershipChange={handleClubMembershipChange} />
+        )}
+
+        {activeView === "planner" && (
+        <>
         <form onSubmit={handleSubmit}>
           <label>
             Startpunkt
@@ -381,22 +474,6 @@ export default function App() {
           ) : (
             <WorkoutEditor onChange={setEditorBlocks} />
           )}
-
-          <fieldset>
-            <legend>Nutzerprofil</legend>
-            <label>
-              FTP (Watt)
-              <input type="number" value={ftpWatts} onChange={(e) => setFtpWatts(Number(e.target.value))} min={1} required />
-            </label>
-            <label>
-              Gewicht (kg)
-              <input type="number" value={weightKg} onChange={(e) => setWeightKg(Number(e.target.value))} min={1} required />
-            </label>
-            <label>
-              Sprint Ø-Watt
-              <input type="number" value={sprintAvgWatts} onChange={(e) => setSprintAvgWatts(Number(e.target.value))} min={1} required />
-            </label>
-          </fieldset>
 
           <fieldset>
             <legend>Einstellungen</legend>
@@ -518,13 +595,30 @@ export default function App() {
 
           {blockedAreas.length > 0 && (
             <fieldset>
-              <legend>Gesperrte Abschnitte</legend>
+              <legend>Temporär gesperrte Abschnitte (nur diese Route)</legend>
               <ul className="point-list">
                 {blockedAreas.map((area, i) => (
                   <li key={i}>
                     {area.lat.toFixed(5)}, {area.lon.toFixed(5)} ({area.radiusMeters} m)
                     <button type="button" onClick={() => removeBlockedArea(i)}>
                       Entfernen
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </fieldset>
+          )}
+
+          {segmentLocks.length > 0 && (
+            <fieldset>
+              <legend>Dauerhaft gesperrte Abschnitte</legend>
+              <ul className="point-list">
+                {segmentLocks.map((lock) => (
+                  <li key={lock.id}>
+                    {lock.lat.toFixed(5)}, {lock.lon.toFixed(5)} ({lock.radiusMeters} m,{" "}
+                    {lock.scope === "personal" ? "persönlich" : "Verein"})
+                    <button type="button" onClick={() => handleDeleteSegmentLock(lock.id)}>
+                      Löschen
                     </button>
                   </li>
                 ))}
@@ -586,6 +680,8 @@ export default function App() {
             </button>
           </div>
         )}
+        </>
+        )}
       </aside>
 
       <main className="map-container">
@@ -610,6 +706,10 @@ export default function App() {
           ignoredClosureIds={ignoredClosureIds}
           showConstructionClosures={showConstructionClosures}
           showJunctions={showJunctions}
+          segmentLocks={segmentLocks}
+          isApprovedClubMember={clubMembership?.status === "Approved"}
+          onCreatePersonalLock={handleCreatePersonalLock}
+          onProposeClubLock={handleProposeClubLock}
           authToken={authToken}
         />
       </main>

@@ -1,4 +1,15 @@
-import type { AuthResponse, ConstructionClosure, Junction, RouteFormInput, RouteResult, WorkoutBlockSpec } from "./types";
+import type {
+  AuthResponse,
+  Club,
+  ClubMembership,
+  ConstructionClosure,
+  Junction,
+  PendingMember,
+  RouteFormInput,
+  RouteResult,
+  SegmentLock,
+  WorkoutBlockSpec,
+} from "./types";
 
 // Zur Build-Zeit über Vite gesetzt (siehe .env.production / Render-Umgebungsvariable
 // VITE_API_BASE_URL) - lokal ohne .env-Datei Fallback auf den lokalen API-Port.
@@ -181,4 +192,142 @@ export async function saveProfile(token: string, profile: RiderProfileDto): Prom
     body: JSON.stringify(profile),
   });
   if (!response.ok) throw new Error(`Profil-Speichern fehlgeschlagen (HTTP ${response.status})`);
+}
+
+// Vereine (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine", Stufe 2).
+
+export async function fetchClubs(token: string): Promise<Club[]> {
+  const response = await fetch(`${API_BASE_URL}/clubs`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Vereins-Liste fehlgeschlagen (HTTP ${response.status})`);
+  return (await response.json()) as Club[];
+}
+
+export async function fetchMyClubMembership(token: string): Promise<ClubMembership | null> {
+  const response = await fetch(`${API_BASE_URL}/clubs/mine`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Vereins-Mitgliedschaft fehlgeschlagen (HTTP ${response.status})`);
+  return (await response.json()) as ClubMembership | null;
+}
+
+export async function createClub(token: string, name: string): Promise<Club> {
+  const response = await fetch(`${API_BASE_URL}/clubs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Verein anlegen fehlgeschlagen (HTTP ${response.status})`);
+  }
+  return (await response.json()) as Club;
+}
+
+export async function joinClub(token: string, clubId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/clubs/${clubId}/join`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Beitritt fehlgeschlagen (HTTP ${response.status})`);
+  }
+}
+
+export async function leaveClub(token: string, clubId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/clubs/${clubId}/leave`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Verein verlassen fehlgeschlagen (HTTP ${response.status})`);
+}
+
+export async function fetchPendingClubMembers(token: string, clubId: string): Promise<PendingMember[]> {
+  const response = await fetch(`${API_BASE_URL}/clubs/${clubId}/members/pending`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Beitrittsanfragen fehlgeschlagen (HTTP ${response.status})`);
+  return (await response.json()) as PendingMember[];
+}
+
+export async function decideClubMember(
+  token: string,
+  clubId: string,
+  membershipId: string,
+  decision: "approve" | "reject",
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/clubs/${clubId}/members/${membershipId}/${decision}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Entscheidung fehlgeschlagen (HTTP ${response.status})`);
+}
+
+// Persistierte Sperr-Bereiche (Stufe 3) - siehe SegmentLock (types.ts). "scope" wird hier
+// clientseitig anhand des jeweiligen Endpunkts ergänzt, da das Backend es nicht mitliefert.
+
+export async function fetchMySegmentLocks(token: string): Promise<SegmentLock[]> {
+  const response = await fetch(`${API_BASE_URL}/segment-locks/mine`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Eigene Sperren fehlgeschlagen (HTTP ${response.status})`);
+  const locks = (await response.json()) as Omit<SegmentLock, "scope">[];
+  return locks.map((l) => ({ ...l, scope: "personal" as const }));
+}
+
+export async function fetchActiveClubSegmentLocks(token: string, clubId: string): Promise<SegmentLock[]> {
+  const response = await fetch(`${API_BASE_URL}/clubs/${clubId}/segment-locks/active`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Vereins-Sperren fehlgeschlagen (HTTP ${response.status})`);
+  const locks = (await response.json()) as Omit<SegmentLock, "scope">[];
+  return locks.map((l) => ({ ...l, scope: "club" as const }));
+}
+
+export async function fetchPendingClubSegmentLocks(token: string, clubId: string): Promise<SegmentLock[]> {
+  const response = await fetch(`${API_BASE_URL}/clubs/${clubId}/segment-locks/pending`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Offene Sperr-Vorschläge fehlgeschlagen (HTTP ${response.status})`);
+  const locks = (await response.json()) as Omit<SegmentLock, "scope">[];
+  return locks.map((l) => ({ ...l, scope: "club" as const }));
+}
+
+export async function createPersonalSegmentLock(token: string, lat: number, lon: number, radiusMeters: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/segment-locks/personal`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ lat, lon, radiusMeters }),
+  });
+  if (!response.ok) throw new Error(`Dauerhafte Sperre fehlgeschlagen (HTTP ${response.status})`);
+}
+
+export async function proposeClubSegmentLock(token: string, lat: number, lon: number, radiusMeters: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/segment-locks/club`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ lat, lon, radiusMeters }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Vereins-Sperre vorschlagen fehlgeschlagen (HTTP ${response.status})`);
+  }
+}
+
+export async function deleteSegmentLock(token: string, id: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/segment-locks/${id}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Löschen fehlgeschlagen (HTTP ${response.status})`);
+}
+
+export async function decideSegmentLock(token: string, id: string, decision: "approve" | "reject"): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/segment-locks/${id}/${decision}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Entscheidung fehlgeschlagen (HTTP ${response.status})`);
 }

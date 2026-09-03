@@ -3,12 +3,15 @@ import { Map as MapLibreMap, Marker, LngLatBounds, Popup } from "maplibre-gl";
 import type { StyleSpecification, GeoJSONSource, ExpressionSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { FeatureCollection, LineString, Point } from "geojson";
-import type { GeoPoint, RouteSegment, SurfaceSegment, BlockedArea, ConstructionClosure, Junction } from "../types";
+import type { GeoPoint, RouteSegment, SurfaceSegment, BlockedArea, ConstructionClosure, Junction, SegmentLock } from "../types";
 import { requestJunctions } from "../api";
 
 // Fester Radius fuer per Klick gesperrte Bereiche - kein UI-Element zum Anpassen, um die
-// Interaktion einfach zu halten (siehe CONCEPT.md Abschnitt 6.18).
-const DEFAULT_BLOCK_RADIUS_METERS = 40;
+// Interaktion einfach zu halten (siehe CONCEPT.md Abschnitt 6.18). Exportiert, da App.tsx
+// denselben Radius fuer die neuen persistierten Sperr-Arten (dauerhaft/Verein, Stufe 3)
+// verwendet - ein Nutzer soll nicht ueberlegen muessen, warum sich der Radius je nach Sperr-Art
+// unterscheidet.
+export const DEFAULT_BLOCK_RADIUS_METERS = 40;
 
 const OSM_RASTER_STYLE: StyleSpecification = {
   version: 8,
@@ -61,6 +64,12 @@ export const ROUGH_SURFACE_WARNING_COLOR = "#92400e";
 // (SURFACE_WARNING_COLOR) zu unterscheiden.
 export const CONSTRUCTION_CLOSURE_COLOR = "#ea580c";
 
+// Persistierte Sperr-Bereiche (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine",
+// Stufe 3) - eigene Farben, klar unterscheidbar von der temporären (roten) BlockedArea sowie
+// voneinander (persönlich vs. Verein).
+export const PERSONAL_LOCK_COLOR = "#7c3aed";
+export const CLUB_LOCK_COLOR = "#0d9488";
+
 function segmentColorExpression(labels: string[]): ExpressionSpecification | string {
   const uniqueLabels = [...new Set(labels)];
   // MapLibre's "match" requires at least one case/output pair - with zero labels (e.g. before
@@ -91,6 +100,16 @@ interface MapViewProps {
   ignoredClosureIds: Set<string>;
   showConstructionClosures: boolean;
   showJunctions: boolean;
+  // Persistierte Sperr-Bereiche (persoenlich + freigegebene Vereins-Sperren), siehe
+  // CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine", Stufe 3. Immer sichtbar
+  // (kein Ein-/Ausblenden-Toggle wie bei Ampeln/Baustellen), da es vergleichsweise wenige sind
+  // und der Nutzer aktiv wissen sollte, wo er dauerhaft nicht mehr hinrouten kann.
+  segmentLocks: SegmentLock[];
+  // Steuert, ob der Kartenklick-Popup die dritte Option ("Für Verein vorschlagen") ueberhaupt
+  // anbietet - nur approved Mitglieder duerfen das.
+  isApprovedClubMember: boolean;
+  onCreatePersonalLock: (point: GeoPoint) => Promise<void>;
+  onProposeClubLock: (point: GeoPoint) => Promise<void>;
   // Fuer /junctions - MapView wird erst nach erfolgreichem Login gerendert (siehe App.tsx),
   // ein gueltiges Token ist an dieser Stelle daher immer vorhanden.
   authToken: string;
@@ -111,6 +130,10 @@ export function MapView({
   ignoredClosureIds,
   showConstructionClosures,
   showJunctions,
+  segmentLocks,
+  isApprovedClubMember,
+  onCreatePersonalLock,
+  onProposeClubLock,
   authToken,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -126,6 +149,12 @@ export function MapView({
   showJunctionsRef.current = showJunctions;
   const showConstructionClosuresRef = useRef(showConstructionClosures);
   showConstructionClosuresRef.current = showConstructionClosures;
+  const isApprovedClubMemberRef = useRef(isApprovedClubMember);
+  isApprovedClubMemberRef.current = isApprovedClubMember;
+  const onCreatePersonalLockRef = useRef(onCreatePersonalLock);
+  onCreatePersonalLockRef.current = onCreatePersonalLock;
+  const onProposeClubLockRef = useRef(onProposeClubLock);
+  onProposeClubLockRef.current = onProposeClubLock;
   // MapLibre's "load" event fires exactly once per map instance. isStyleLoaded() can also
   // transiently report false during unrelated tile activity long after the initial load, so
   // neither is safe to re-check on every route update - track it ourselves instead.
@@ -151,13 +180,25 @@ export function MapView({
     // CONCEPT.md 6.18/6.19.
     map.on("click", (e) => {
       const { lat, lng } = e.lngLat;
+      // "Für Verein vorschlagen" nur anbieten, wenn approved Mitglied - siehe
+      // isApprovedClubMemberRef (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/
+      // Vereine", Stufe 2/3).
+      const clubLockButton = isApprovedClubMemberRef.current
+        ? '<button type="button" data-action="block-club" style="padding:6px 10px;cursor:pointer;color:' +
+          CLUB_LOCK_COLOR +
+          '">Für Verein vorschlagen</button>'
+        : "";
       const popup = new Popup({ closeButton: true, closeOnClick: true, maxWidth: "none" })
         .setLngLat(e.lngLat)
         .setHTML(
-          '<div style="display:flex;flex-direction:column;gap:4px;min-width:200px">' +
+          '<div style="display:flex;flex-direction:column;gap:4px;min-width:220px">' +
             '<button type="button" data-action="start" style="padding:6px 10px;cursor:pointer">Startpunkt setzen</button>' +
             '<button type="button" data-action="require" style="padding:6px 10px;cursor:pointer;color:#16a34a">Diesen Punkt in die Route einschließen</button>' +
-            '<button type="button" data-action="block" style="padding:6px 10px;cursor:pointer;color:#dc2626">Abschnitt hier sperren</button>' +
+            '<button type="button" data-action="block-temp" style="padding:6px 10px;cursor:pointer;color:#dc2626">Temporär sperren (nur diese Route)</button>' +
+            '<button type="button" data-action="block-permanent" style="padding:6px 10px;cursor:pointer;color:' +
+            PERSONAL_LOCK_COLOR +
+            '">Dauerhaft für mich sperren</button>' +
+            clubLockButton +
           "</div>",
         )
         .addTo(map);
@@ -171,8 +212,16 @@ export function MapView({
         onAddRequiredPointRef.current({ lat, lon: lng });
         popup.remove();
       });
-      el.querySelector('[data-action="block"]')?.addEventListener("click", () => {
+      el.querySelector('[data-action="block-temp"]')?.addEventListener("click", () => {
         onAddBlockedAreaRef.current({ lat, lon: lng, radiusMeters: DEFAULT_BLOCK_RADIUS_METERS });
+        popup.remove();
+      });
+      el.querySelector('[data-action="block-permanent"]')?.addEventListener("click", () => {
+        onCreatePersonalLockRef.current({ lat, lon: lng }).catch(() => {});
+        popup.remove();
+      });
+      el.querySelector('[data-action="block-club"]')?.addEventListener("click", () => {
+        onProposeClubLockRef.current({ lat, lon: lng }).catch(() => {});
         popup.remove();
       });
     });
@@ -246,6 +295,50 @@ export function MapView({
       map.once("load", applyBlockedAreas);
     }
   }, [blockedAreas]);
+
+  // Persistierte Sperr-Bereiche (persoenlich + Verein, siehe SegmentLock/CONCEPT.md
+  // Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine", Stufe 3) - analog zum bestehenden
+  // blockedAreas-Kreis-Layer oben, aber mit einer nach "scope" unterscheidenden Farbe statt
+  // einer festen.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const applySegmentLocks = () => {
+      const geojson: FeatureCollection<Point> = {
+        type: "FeatureCollection",
+        features: segmentLocks.map((s) => ({
+          type: "Feature",
+          properties: { scope: s.scope },
+          geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+        })),
+      };
+      const existing = map.getSource("segment-locks") as GeoJSONSource | undefined;
+      if (existing) {
+        existing.setData(geojson);
+      } else {
+        map.addSource("segment-locks", { type: "geojson", data: geojson });
+        map.addLayer({
+          id: "segment-locks-circle",
+          type: "circle",
+          source: "segment-locks",
+          paint: {
+            "circle-radius": 14,
+            "circle-color": ["match", ["get", "scope"], "club", CLUB_LOCK_COLOR, PERSONAL_LOCK_COLOR],
+            "circle-opacity": 0.35,
+            "circle-stroke-color": ["match", ["get", "scope"], "club", CLUB_LOCK_COLOR, PERSONAL_LOCK_COLOR],
+            "circle-stroke-width": 2,
+          },
+        });
+      }
+    };
+
+    if (styleReadyRef.current) {
+      applySegmentLocks();
+    } else {
+      map.once("load", applySegmentLocks);
+    }
+  }, [segmentLocks]);
 
   useEffect(() => {
     const map = mapRef.current;

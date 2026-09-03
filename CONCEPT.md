@@ -219,13 +219,12 @@ UI/Infrastruktur auf einer ungetesteten Kernannahme investiert wird.
 
 ### Phase 4 — Später (nicht Teil des MVP)
 
-- **Mehrbenutzerfähigkeit/Auth/Vereine** (geplant, noch nicht umgesetzt) - Reihenfolge laut
-  Nutzer: (1) Nutzerkonten mit Login, (2) Vereine mit Mitgliedschaft und Rollen
-  (normales Mitglied vs. "Verantwortlicher"), als Grundlage für ein mögliches späteres
-  Preismodell, (3) Migration der Sperr-Bereiche (6.18) von rein Frontend-Request-State zu
-  persistierten, pro-Nutzer ODER pro-Verein geltenden Ressourcen - eine Verein-weite Sperrung
-  muss dabei von einem Verantwortlichen freigegeben werden (Status pending/approved), eine
-  Nutzer-eigene Sperrung gilt sofort.
+- **Mehrbenutzerfähigkeit/Auth/Vereine** - Reihenfolge laut Nutzer: (1) Nutzerkonten mit Login
+  (durchgeführt, siehe unten), (2) Vereine mit Mitgliedschaft und Rollen (normales Mitglied vs.
+  "Verantwortlicher") UND (3) Migration der Sperr-Bereiche (6.18) zu persistierten, pro-Nutzer
+  ODER pro-Verein geltenden Ressourcen - BEIDE zusammen durchgeführt, siehe Abschnitt 6.32. Als
+  Preismodell selbst (der urspruengliche Anlass fuer Vereins-Rollen) ist NICHT Teil dieser
+  Umsetzung - nur die strukturelle Grundlage dafuer.
 
   **Auth-Entscheidung (2026-08-30):** ASP.NET Core Identity (selbst gehostet, in der
   bestehenden API), fuer den ersten Wurf NUR klassische E-Mail/Passwort-Registrierung
@@ -1440,6 +1439,57 @@ Volle Testsuite: 92/92 grün. Live gegen den echten lokalen GraphHopper verifizi
 20min-Plan mit demselben, 4,6km entfernten Pflicht-Wegpunkt lieferte jetzt 11,87km/21min20s
 (≈7% über Plan) statt zuvor 15,68km/28min (≈57% über Plan) - in ~15s (mehrere Versuche
 innerhalb des 45s-Zeitbudgets).
+
+## 6.32 Phase 2 — Vereine (Stufe 2) + persistierte Sperr-Bereiche (Stufe 3) + eigene Profil-Seite (durchgeführt)
+
+Umsetzung der in Abschnitt 7/Phase-4-Backlog bereits skizzierten Stufen 2+3
+("Mehrbenutzerfähigkeit/Auth/Vereine") in einem Zug (Nutzer-Entscheidung: komplette Kette statt
+nur Grundstruktur), plus ein Nutzerwunsch, FTP/Gewicht/Sprint-Watt aus der
+Routenplanungs-Seitenleiste in eine eigene Seite auszulagern.
+
+**Datenmodell (`TrainingRoutePlanner.Data`, Migration `AddClubsAndSegmentLocks`):** `Club`
+(Id/Name/CreatedAt), `ClubMembership` (Status Pending/Approved, `IsAdmin` - ein Verein kann
+MEHRERE Verantwortliche haben, Nutzer-Entscheidung; eindeutiger Index auf `UserId` - ein Nutzer
+ist zu jedem Zeitpunkt hoechstens in einem Verein), `SegmentLock` (deckt BEIDE dauerhaften
+Sperr-Arten in einer Tabelle ab: `ClubId == null` = persoenliche Sperre, sofort `Active`;
+`ClubId` gesetzt = Vereins-Sperre, startet `Pending`, wird erst nach Freigabe durch einen
+Verantwortlichen `Active`). "Temporär" bleibt bewusst UNVERAENDERT rein Request-lokal (wie
+bisher `BlockedArea`, siehe 6.18) - nur die beiden neuen Sperr-Arten werden gespeichert.
+
+**Backend-Endpunkte:** `POST/GET /clubs`, `GET /clubs/mine`, `POST /clubs/{id}/join|leave`,
+`GET /clubs/{id}/members/pending` (Einsicht: jedes Mitglied; Freigabe: nur Verantwortliche),
+`POST /clubs/{id}/members/{id}/approve|reject`, `GET/POST /segment-locks/*`,
+`DELETE /segment-locks/{id}` (Owner ODER Verantwortlicher des zugehoerigen Vereins),
+`GET /clubs/{id}/segment-locks/pending|active`, `POST /segment-locks/{id}/approve|reject`.
+Wichtigste Erkenntnis aus der Recherche vor der Umsetzung: `GraphHopperClient.BuildCustomModel`
+ist bereits voellig ursachen-agnostisch (kennt nur eine flache Liste zu sperrender Kreise) -
+**kein einziger Codepfad in `GraphHopperClient`/`RouteRequest`/`RouteConstructionService` musste
+geaendert werden**. `/route` laedt lediglich VOR dem Erzeugen des `RouteRequest` die eigenen
+aktiven `SegmentLock`s (persoenlich + freigegebene Vereins-Sperren, falls Mitglied) und haengt
+sie an die ohnehin vom Frontend gesendete (temporaere) `blockedAreas`-Liste an - dieselbe
+Stelle, an der bereits die Baustellen-Sperrungen (6.27) eingemischt werden.
+
+**Frontend:** kein Router installiert (bewusst, fuer 2-3 zusaetzliche Ansichten unverhaeltnis-
+maessig) - stattdessen ein simpler `activeView`-State ("planner"/"profile"/"club") mit einer
+Tab-Leiste (wiederverwendet `.mode-tabs`), nur der Sidebar-Inhalt wechselt, die Karte bleibt
+immer gemountet. Neue `ProfilePage`/`ClubPage`-Komponenten. Das Kartenklick-Popup (6.18/6.19)
+bekommt statt einem Sperr-Button drei ("Temporär sperren" / "Dauerhaft für mich sperren" / "Für
+Verein vorschlagen" - letzteres nur sichtbar bei approved Mitgliedschaft), Kartenlayer fuer
+persoenliche (lila) und Vereins- (tuerkis) Sperren analog zum bestehenden `blocked-areas`-Layer.
+
+**Getestet:** Migration live gegen die echte Neon-DB angewendet (erster jemals in diesem Repo
+dokumentierter `dotnet ef`-Befehl: `dotnet ef migrations add AddClubsAndSegmentLocks --project
+src/TrainingRoutePlanner.Data --startup-project src/TrainingRoutePlanner.Api`, danach
+`dotnet ef database update` mit denselben Projekt-Flags), Tabellen entstanden wie erwartet.
+`dotnet build`/`dotnet test` (92/92 grün, unveraendert - keine bestehende Logik angefasst),
+`tsc -b`/`npm run build` fehlerfrei. Live im Chrome-Vorschaufenster mit zwei echten Test-Accounts
+der komplette Fluss durchgespielt: Verein gegruendet (Ersteller wird automatisch Verantwortlicher),
+zweiter Account tritt bei (Pending), Verantwortlicher gibt frei (Approved-Status + Beitritts-
+Warteschlange leert sich), zweiter Account schlaegt eine Vereins-Sperre vor (Pending), Verant-
+wortlicher gibt sie frei (Active) - Kartenlayer zeigt sie sofort in Tuerkis. Wichtigster
+Korrektheits-Nachweis: eine persoenliche Dauer-Sperre GENAU auf einem Punkt der zuvor berechneten
+Route angelegt (0m Abstand) liess die Route beim erneuten Berechnen automatisch auf 439,7m
+Abstand ausweichen, ohne dass der Nutzer die Sperre pro Anfrage erneut angeben musste.
 
 ## 7. Offene Punkte
 

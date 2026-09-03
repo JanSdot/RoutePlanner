@@ -130,3 +130,42 @@ export interface AuthResponse {
   token: string;
   email: string;
 }
+
+// Vereine (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine", Stufe 2) - siehe
+// GET /clubs (Backend).
+export interface Club {
+  id: string;
+  name: string;
+  memberCount: number;
+}
+
+// Eigene Vereinsmitgliedschaft - siehe GET /clubs/mine (Backend). null = kein Verein.
+export interface ClubMembership {
+  clubId: string;
+  clubName: string;
+  status: "Pending" | "Approved";
+  isAdmin: boolean;
+}
+
+// Eine offene Beitrittsanfrage - nur fuer Verantwortliche sichtbar, siehe
+// GET /clubs/{clubId}/members/pending (Backend).
+export interface PendingMember {
+  membershipId: string;
+  email: string;
+  requestedAt: string;
+}
+
+// Eine dauerhaft gespeicherte Sperrung (persoenlich ODER Verein) - Ergaenzung zu BlockedArea
+// (die weiterhin rein Request-lokal/temporaer bleibt), siehe CONCEPT.md Phase-4-Backlog
+// "Mehrbenutzerfähigkeit/Auth/Vereine", Stufe 3. "scope" kommt NICHT vom Backend (SegmentLockDto
+// kennt nur "status"), sondern wird beim Laden in App.tsx anhand des Endpunkts angereichert
+// (persoenlich vs. Club), fuers Kartenlayer-Rendering.
+export interface SegmentLock {
+  id: string;
+  lat: number;
+  lon: number;
+  radiusMeters: number;
+  status: "Active" | "Pending" | "Rejected";
+  createdAt: string;
+  scope: "personal" | "club";
+}
