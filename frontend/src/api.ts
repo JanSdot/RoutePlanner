@@ -50,6 +50,10 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   if (input.ignoredConstructionClosureIds.length > 0) {
     data.append("ignoredConstructionClosureIds", JSON.stringify(input.ignoredConstructionClosureIds));
   }
+  data.append("showAlternatives", String(input.showAlternatives));
+  if (input.seed != null) {
+    data.append("seed", String(input.seed));
+  }
   if (input.plannedStartTime) {
     // new Date(datetimeLocalString) interpretiert den Wert als Browser-Lokalzeit (JS-Spezifikation
     // fuer einen ISO-String ohne Zeitzonen-Suffix) - .toISOString() wandelt das dann eindeutig in

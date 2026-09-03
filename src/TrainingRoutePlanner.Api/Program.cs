@@ -768,6 +768,8 @@ app.MapPost("/route", async (
     List<GeoPoint> requiredPoints;
     List<string> ignoredConstructionClosureIds;
     DateTimeOffset? plannedStartTime;
+    bool showAlternatives;
+    int? requestedSeed;
     try
     {
         rider = new RiderProfile
@@ -791,6 +793,8 @@ app.MapPost("/route", async (
         requiredPoints = ParseRequiredPoints();
         ignoredConstructionClosureIds = ParseIgnoredConstructionClosureIds();
         plannedStartTime = ParseOptionalDateTimeOffset("plannedStartTime");
+        showAlternatives = string.Equals(form["showAlternatives"], "true", StringComparison.OrdinalIgnoreCase);
+        requestedSeed = ParseOptionalNullableInt("seed");
     }
     catch (ArgumentException ex)
     {
@@ -849,12 +853,19 @@ app.MapPost("/route", async (
         RequiredPoints = requiredPoints,
         ConstructionClosures = activeConstructionClosures,
         PlannedStartTime = plannedStartTime,
+        ShowAlternatives = showAlternatives,
     };
 
     try
     {
-        var result = await routeService.BuildRouteAsync(routeRequest);
-        if (string.Equals(form["format"], "gpx", StringComparison.OrdinalIgnoreCase))
+        var isGpx = string.Equals(form["format"], "gpx", StringComparison.OrdinalIgnoreCase);
+        // Ein mitgeschickter Seed (siehe RouteResult.Seed/frontend/src/App.tsx) reproduziert
+        // beim GPX-Export deterministisch GENAU die angezeigte Variante, statt die Route (und
+        // damit potenziell eine ANDERE Variante) fuer den Download frisch zu berechnen.
+        var result = isGpx && requestedSeed is int seed
+            ? await routeService.BuildRouteWithSeedAsync(routeRequest, seed)
+            : await routeService.BuildRouteAsync(routeRequest);
+        if (isGpx)
         {
             var gpx = GpxWriter.ToGpx(result);
             return Results.Text(gpx, "application/gpx+xml");

@@ -148,6 +148,45 @@ internal static class PolylineMath
         return bestDistanceAlong;
     }
 
+    /// <summary>Kuerzeste Distanz von einem Punkt zu irgendeiner Stelle der Geometrie (nicht nur
+    /// zu ihren Stuetzpunkten) - Geschwister von NearestPointDistanceAlongMeters, das dieselbe
+    /// Segment-Projektion nutzt, aber die Distanz selbst statt der Position entlang der Linie
+    /// zurueckgibt. Genutzt fuer den Streckenvielfalt-Check bei Alternativrouten (siehe
+    /// RouteConstructionService.IsSufficientlyDifferent).</summary>
+    public static double MinDistanceToPolylineMeters(GeoPoint point, IReadOnlyList<GeoPoint> geometry)
+    {
+        if (geometry.Count == 0)
+            return double.MaxValue;
+        if (geometry.Count == 1)
+            return HaversineMeters(point, geometry[0]);
+
+        var bestDistanceSq = double.MaxValue;
+        var metersPerDegreeLat = 111_320.0;
+        var metersPerDegreeLon = metersPerDegreeLat * Math.Cos(point.Lat * Math.PI / 180.0);
+
+        for (var i = 1; i < geometry.Count; i++)
+        {
+            var a = geometry[i - 1];
+            var b = geometry[i];
+
+            var ax = (a.Lon - point.Lon) * metersPerDegreeLon;
+            var ay = (a.Lat - point.Lat) * metersPerDegreeLat;
+            var bx = (b.Lon - point.Lon) * metersPerDegreeLon;
+            var by = (b.Lat - point.Lat) * metersPerDegreeLat;
+            var abx = bx - ax;
+            var aby = by - ay;
+            var abLengthSq = abx * abx + aby * aby;
+            var t = abLengthSq <= 0 ? 0.0 : Math.Clamp((-ax * abx - ay * aby) / abLengthSq, 0.0, 1.0);
+            var closestX = ax + t * abx;
+            var closestY = ay + t * aby;
+            var distanceSq = closestX * closestX + closestY * closestY;
+
+            if (distanceSq < bestDistanceSq)
+                bestDistanceSq = distanceSq;
+        }
+        return Math.Sqrt(bestDistanceSq);
+    }
+
     public static double BearingDegrees(GeoPoint from, GeoPoint to)
     {
         var phi1 = from.Lat * Math.PI / 180.0;

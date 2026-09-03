@@ -87,16 +87,28 @@ public sealed class RouteConstructionService(
     private const double DistanceRefinementToleranceFraction = 0.05;
     private const double GradientSampleWindowMeters = 400;
 
+    // Nur relevant, wenn RouteRequest.ShowAlternatives gesetzt ist (siehe
+    // BuildRouteWithAlternativesAsync). Grosszuegiger als MaxSurfaceAvoidanceTimeBudget, da hier
+    // bewusst MEHRERE gute Kandidaten gesucht werden statt nur eines ausreichenden - der Nutzer
+    // hat dem laenger dauernden Suchlauf ueber die Checkbox aktiv zugestimmt.
+    private const int MaxAlternativeSeedAttempts = 8;
+    private static readonly TimeSpan AlternativeTimeBudget = TimeSpan.FromSeconds(60);
+    private const int AlternativeTargetCount = 3;
+
+    // Ein Kandidat gilt nur dann als "eigene" Alternative (statt im Wesentlichen derselben
+    // Schleife mit einer anderen Randnotiz), wenn ein spuerbarer Anteil seiner Laenge deutlich
+    // (mehr als AlternativeDivergenceThresholdMeters) von JEDER bereits akzeptierten Variante
+    // abweicht - siehe IsSufficientlyDifferent.
+    private const int AlternativeGeometrySampleCount = 40;
+    private const double AlternativeDivergenceThresholdMeters = 150.0;
+    private const double MinAlternativeDivergenceFraction = 0.3;
+
     public async Task<RouteResult> BuildRouteAsync(RouteRequest request, CancellationToken ct = default)
     {
-        // Einmalig fuer die gesamte Anfrage abgerufen statt pro Streckenvarianten-Versuch - Ort
-        // und Zeitpunkt aendern sich zwischen den Versuchen nie, ein wiederholter Abruf waere
-        // reine Verschwendung (siehe CONCEPT.md Phase-4-Backlog "Windmodellierung"). Liefert
-        // null sowohl ohne gesetzten PlannedStartTime als auch bei einem Vorhersage-Fehler -
-        // beides bedeutet schlicht "keine Windkomponente in der Zeitschaetzung", kein Abbruch.
-        var wind = request.PlannedStartTime is DateTimeOffset plannedStartTime
-            ? await windForecastClient.GetForecastAsync(request.StartPoint, plannedStartTime, ct)
-            : null;
+        var wind = await GetWindAsync(request, ct);
+
+        if (request.ShowAlternatives)
+            return await BuildRouteWithAlternativesAsync(request, wind, ct);
 
         // Ob ueberhaupt ein explizites Limit gesetzt ist (Untergrund/Kreuzungen). Pflicht-
         // Wegpunkte lösen den Retry-Mechanismus ZUSAETZLICH aus, auch ohne jedes Limit: ein
@@ -128,18 +140,8 @@ public sealed class RouteConstructionService(
         {
             attemptsMade++;
             var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, wind, ct);
-            // Getrennt statt wie frueher zu EINER Zahl addiert (siehe CONCEPT.md Bugfix-Abschnitt
-            // zu ueberhoehten Warnungs-Zahlen) - ein rauer, aber befestigter Abschnitt (surface=
-            // asphalt + smoothness=bad) ist etwas ANDERES als echter unbefestigter Untergrund und
-            // bekommt daher sein eigenes Limit (MaxTotalRoughMeters) statt unsichtbar ins
-            // "unbefestigt"-Limit einzufliessen.
-            var (unpavedTotalMeters, maxUnpavedSegmentMeters) = SumBadSegments(result.SurfaceSegments, SurfaceClassifier.IsUnpaved);
-            var (roughTotalMeters, _) = SumBadSegments(result.SmoothnessSegments, SurfaceClassifier.IsBadSmoothness);
-            var junctionCount = corridorIndex.CountDisruptiveJunctionsNear(result.Geometry, JunctionProximityMeters);
-            var durationMismatchSeconds = Math.Abs((result.EstimatedTotalTime - prescribedTime).TotalSeconds);
-
-            var badness = unpavedTotalMeters + roughTotalMeters + junctionCount * JunctionBadnessWeightMeters
-                + durationMismatchSeconds * DurationMismatchBadnessWeightMetersPerSecond;
+            var score = ScoreAttempt(request, result, prescribedTime);
+            var (badness, unpavedTotalMeters, maxUnpavedSegmentMeters, roughTotalMeters, junctionCount, durationMismatchSeconds) = score;
             if (badness < bestBadness)
             {
                 bestBadness = badness;
@@ -189,7 +191,125 @@ public sealed class RouteConstructionService(
             SurfaceSegments = bestResult.SurfaceSegments,
             SmoothnessSegments = bestResult.SmoothnessSegments,
             Wind = bestResult.Wind,
+            Seed = bestResult.Seed,
+            Alternatives = bestResult.Alternatives,
         };
+    }
+
+    /// <summary>Holt die Windvorhersage einmalig fuer die gesamte Anfrage (siehe CONCEPT.md
+    /// Phase-4-Backlog "Windmodellierung") - Ort und Zeitpunkt aendern sich zwischen Versuchen
+    /// nie, ein wiederholter Abruf waere reine Verschwendung. Liefert null sowohl ohne gesetzten
+    /// PlannedStartTime als auch bei einem Vorhersage-Fehler - beides bedeutet schlicht "keine
+    /// Windkomponente in der Zeitschaetzung", kein Abbruch.</summary>
+    private async Task<WindConditions?> GetWindAsync(RouteRequest request, CancellationToken ct)
+    {
+        return request.PlannedStartTime is DateTimeOffset plannedStartTime
+            ? await windForecastClient.GetForecastAsync(request.StartPoint, plannedStartTime, ct)
+            : null;
+    }
+
+    /// <summary>Deterministischer Direktzugriff auf einen bestimmten round_trip-Seed, OHNE jede
+    /// Retry-/Badness-Logik - genutzt vom GPX-Export (Program.cs), um exakt die Geometrie zu
+    /// reproduzieren, die dem Nutzer gerade angezeigt wird (RouteResult.Seed), statt bei jedem
+    /// Download eine potenziell abweichende Variante frisch zu berechnen.</summary>
+    public async Task<RouteResult> BuildRouteWithSeedAsync(RouteRequest request, int seed, CancellationToken ct = default)
+    {
+        var wind = await GetWindAsync(request, ct);
+        return await BuildRouteAttemptAsync(request, seed, wind, ct);
+    }
+
+    /// <summary>Sucht bis zu AlternativeTargetCount hinreichend unterschiedliche Streckenvarianten
+    /// (siehe RouteRequest.ShowAlternatives, IsSufficientlyDifferent) statt wie die normale
+    /// Retry-Schleife nur EINE gute genug zu behalten. Der erste Versuch wird immer akzeptiert
+    /// (nichts zum Vergleichen); jeder weitere nur, wenn er von ALLEN bereits akzeptierten
+    /// Kandidaten spuerbar abweicht. Bricht ab, sobald genug Kandidaten gefunden sind, das
+    /// Zeitbudget ueberschritten ist, oder die Seeds ausgehen. Der Kandidat mit der geringsten
+    /// Badness wird zur primaeren Antwort, die uebrigen wandern in Alternatives.</summary>
+    private async Task<RouteResult> BuildRouteWithAlternativesAsync(RouteRequest request, WindConditions? wind, CancellationToken ct)
+    {
+        var prescribedTime = TimeSpan.FromTicks(request.Plan.Steps.Sum(s => s.Duration.Ticks));
+        var accepted = new List<(RouteResult Result, double Badness)>();
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        for (var attempt = 0; attempt < MaxAlternativeSeedAttempts && accepted.Count < AlternativeTargetCount; attempt++)
+        {
+            var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, wind, ct);
+            var score = ScoreAttempt(request, result, prescribedTime);
+            var sufficientlyDifferent = accepted.All(a => IsSufficientlyDifferent(result.Geometry, a.Result.Geometry));
+            if (sufficientlyDifferent)
+                accepted.Add((result, score.Badness));
+
+            if (stopwatch.Elapsed >= AlternativeTimeBudget)
+                break;
+        }
+
+        // accepted enthaelt immer mindestens den ersten Versuch (nichts zum Vergleichen bei
+        // leerer Liste, siehe oben) - kein Null-Fallback wie in der normalen Retry-Schleife noetig.
+        accepted.Sort((a, b) => a.Badness.CompareTo(b.Badness));
+        var primary = accepted[0].Result;
+        var alternatives = accepted.Skip(1).Select(a => a.Result).ToList();
+
+        var warnings = primary.Warnings.ToList();
+        if (accepted.Count < AlternativeTargetCount)
+        {
+            warnings.Add(new RouteWarning
+            {
+                Message = $"Es konnten nur {accepted.Count} statt {AlternativeTargetCount} " +
+                          "ausreichend unterschiedliche Streckenvarianten gefunden werden.",
+            });
+        }
+
+        return new RouteResult
+        {
+            Geometry = primary.Geometry,
+            TotalDistanceMeters = primary.TotalDistanceMeters,
+            EstimatedTotalTime = primary.EstimatedTotalTime,
+            Warnings = warnings,
+            Segments = primary.Segments,
+            SurfaceSegments = primary.SurfaceSegments,
+            SmoothnessSegments = primary.SmoothnessSegments,
+            Wind = primary.Wind,
+            Seed = primary.Seed,
+            Alternatives = alternatives,
+        };
+    }
+
+    /// <summary>Prueft, ob ein Kandidat spuerbar von einer bereits akzeptierten Route abweicht,
+    /// statt im Wesentlichen dieselbe Schleife zu sein - samplet AlternativeGeometrySampleCount
+    /// gleichmaessig verteilte Punkte entlang candidate und verlangt, dass mindestens
+    /// MinAlternativeDivergenceFraction davon mehr als AlternativeDivergenceThresholdMeters von
+    /// JEDER Stelle von accepted entfernt liegen.</summary>
+    private static bool IsSufficientlyDifferent(IReadOnlyList<GeoPoint> candidate, IReadOnlyList<GeoPoint> accepted)
+    {
+        var length = PolylineMath.TotalLengthMeters(candidate);
+        if (length <= 0)
+            return false;
+
+        var divergentSamples = 0;
+        for (var i = 0; i < AlternativeGeometrySampleCount; i++)
+        {
+            var point = PolylineMath.PointAtDistance(candidate, length * i / (AlternativeGeometrySampleCount - 1.0));
+            if (PolylineMath.MinDistanceToPolylineMeters(point, accepted) > AlternativeDivergenceThresholdMeters)
+                divergentSamples++;
+        }
+        return divergentSamples / (double)AlternativeGeometrySampleCount >= MinAlternativeDivergenceFraction;
+    }
+
+    /// <summary>Bewertet, wie weit ein Versuch von den gesetzten Grenzwerten UND der geplanten
+    /// Trainingsdauer entfernt ist - reine Extraktion der Badness-Formel aus der bestehenden
+    /// Retry-Schleife (siehe CONCEPT.md Bugfix-Abschnitte zu Untergrund-Limits/Pflicht-
+    /// Wegpunkten), jetzt auch von BuildRouteWithAlternativesAsync genutzt.</summary>
+    private (double Badness, double UnpavedTotalMeters, double MaxUnpavedSegmentMeters, double RoughTotalMeters, int JunctionCount, double DurationMismatchSeconds) ScoreAttempt(
+        RouteRequest request, RouteResult result, TimeSpan prescribedTime)
+    {
+        var (unpavedTotalMeters, maxUnpavedSegmentMeters) = SumBadSegments(result.SurfaceSegments, SurfaceClassifier.IsUnpaved);
+        var (roughTotalMeters, _) = SumBadSegments(result.SmoothnessSegments, SurfaceClassifier.IsBadSmoothness);
+        var junctionCount = corridorIndex.CountDisruptiveJunctionsNear(result.Geometry, JunctionProximityMeters);
+        var durationMismatchSeconds = Math.Abs((result.EstimatedTotalTime - prescribedTime).TotalSeconds);
+
+        var badness = unpavedTotalMeters + roughTotalMeters + junctionCount * JunctionBadnessWeightMeters
+            + durationMismatchSeconds * DurationMismatchBadnessWeightMetersPerSecond;
+        return (badness, unpavedTotalMeters, maxUnpavedSegmentMeters, roughTotalMeters, junctionCount, durationMismatchSeconds);
     }
 
     private async Task<RouteResult> BuildRouteAttemptAsync(RouteRequest request, int roundTripSeed, WindConditions? wind, CancellationToken ct)
@@ -293,6 +413,8 @@ public sealed class RouteConstructionService(
             SurfaceSegments = finalRoute.SurfaceSegments,
             SmoothnessSegments = finalRoute.SmoothnessSegments,
             Wind = wind,
+            Seed = roundTripSeed,
+            Alternatives = [],
         };
     }
 

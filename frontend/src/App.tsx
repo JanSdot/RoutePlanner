@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MapView, colorForSegmentLabel, DEFAULT_BLOCK_RADIUS_METERS } from "./components/MapView";
+import { MapView, colorForSegmentLabel, DEFAULT_BLOCK_RADIUS_METERS, ALTERNATIVE_ROUTE_COLORS } from "./components/MapView";
 import { WorkoutEditor } from "./components/WorkoutEditor";
 import { AuthPanel } from "./components/AuthPanel";
 import { HelpPanel } from "./components/HelpPanel";
@@ -87,6 +87,7 @@ export default function App() {
   const [maxApproachMinutes, setMaxApproachMinutes] = useState(30);
   const [segmentReuse, setSegmentReuse] = useState<SegmentReusePreference>("PreferReuse");
   const [allowUTurns, setAllowUTurns] = useState(true);
+  const [showAlternatives, setShowAlternatives] = useState(false);
   // Leerer String = kein Limit (siehe parseOptionalMeters) - kein sinnvoller Zahlen-Default,
   // da 0 etwas anderes bedeuten wuerde (gar kein unbefestigter Untergrund erlaubt).
   const [maxUnpavedSegmentMeters, setMaxUnpavedSegmentMeters] = useState("");
@@ -279,6 +280,14 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Bei ShowAlternatives=true traegt routeResult die beste Variante als "primary" plus die
+  // uebrigen in routeResult.alternatives - candidates fasst beide in einer Liste zusammen
+  // (Index 0 = urspruenglich primaer), selectedCandidateIndex waehlt, welche gerade auf der
+  // Karte/im Ergebnis-Block angezeigt wird (siehe MapView-Klick/Listen-Auswahl unten).
+  const [selectedCandidateIndex, setSelectedCandidateIndex] = useState(0);
+  const candidates = routeResult ? [routeResult, ...routeResult.alternatives] : [];
+  const selectedRoute = candidates[selectedCandidateIndex] ?? null;
+
   const hasWorkoutInput = inputMode === "file" ? !!fitFile : editorBlocks.length > 0;
 
   async function resolveFitFile(token: string): Promise<File> {
@@ -296,6 +305,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     setRouteResult(null);
+    setSelectedCandidateIndex(0);
     try {
       const file = await resolveFitFile(authToken);
       const result = await requestRoute(
@@ -315,6 +325,7 @@ export default function App() {
           requiredPoints,
           ignoredConstructionClosureIds: [...ignoredClosureIds],
           plannedStartTime: plannedStartTime || null,
+          showAlternatives,
           fitFile: file,
         },
         authToken,
@@ -331,7 +342,7 @@ export default function App() {
   }
 
   async function handleGpxDownload() {
-    if (!startPoint || !hasWorkoutInput || !authToken) return;
+    if (!startPoint || !hasWorkoutInput || !authToken || !selectedRoute) return;
     setError(null);
     try {
       const file = await resolveFitFile(authToken);
@@ -352,6 +363,12 @@ export default function App() {
           requiredPoints,
           ignoredConstructionClosureIds: [...ignoredClosureIds],
           plannedStartTime: plannedStartTime || null,
+          // Reproduziert deterministisch genau die aktuell ausgewaehlte Variante (siehe
+          // RouteResult.seed) statt die Route fuer den Download frisch (und potenziell anders)
+          // zu berechnen - showAlternatives=false, da hier gezielt EINE bestimmte Variante
+          // angefordert wird, keine neue Suche nach Alternativen.
+          showAlternatives: false,
+          seed: selectedRoute.seed,
           fitFile: file,
         },
         authToken,
@@ -504,6 +521,14 @@ export default function App() {
             <label className="checkbox-label">
               <input
                 type="checkbox"
+                checked={showAlternatives}
+                onChange={(e) => setShowAlternatives(e.target.checked)}
+              />
+              Alternativrouten anzeigen
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
                 checked={showJunctions}
                 onChange={(e) => setShowJunctions(e.target.checked)}
               />
@@ -633,27 +658,50 @@ export default function App() {
 
         {error && <p className="error">{error}</p>}
 
-        {routeResult && (
+        {selectedRoute && (
           <div className="result">
             <h2>Ergebnis</h2>
-            <p>Distanz: {(routeResult.totalDistanceMeters / 1000).toFixed(1)} km</p>
-            <p>Geschätzte Zeit: {formatDotNetTimeSpan(routeResult.estimatedTotalTime)}</p>
-            {routeResult.wind && (
-              <p>Wind: {formatWind(routeResult.wind.windSpeedMps, routeResult.wind.windFromDirectionDegrees)}</p>
+
+            {candidates.length > 1 && (
+              <div className="legend alternatives-list">
+                <strong>Alternativen:</strong>
+                <ul>
+                  {candidates.map((candidate, index) => (
+                    <li
+                      key={candidate.seed}
+                      className={index === selectedCandidateIndex ? "selected" : undefined}
+                      onClick={() => setSelectedCandidateIndex(index)}
+                    >
+                      <span
+                        className="legend-swatch"
+                        style={{ background: ALTERNATIVE_ROUTE_COLORS[index % ALTERNATIVE_ROUTE_COLORS.length] }}
+                      />
+                      {(candidate.totalDistanceMeters / 1000).toFixed(1)} km,{" "}
+                      {formatDotNetTimeSpan(candidate.estimatedTotalTime)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
 
-            {routeResult.segments.length > 0 && (
+            <p>Distanz: {(selectedRoute.totalDistanceMeters / 1000).toFixed(1)} km</p>
+            <p>Geschätzte Zeit: {formatDotNetTimeSpan(selectedRoute.estimatedTotalTime)}</p>
+            {selectedRoute.wind && (
+              <p>Wind: {formatWind(selectedRoute.wind.windSpeedMps, selectedRoute.wind.windFromDirectionDegrees)}</p>
+            )}
+
+            {selectedRoute.segments.length > 0 && (
               <div className="legend">
                 <strong>Intervalle:</strong>
                 <ul>
-                  {[...new Set(routeResult.segments.map((s) => s.label))].map((label) => (
+                  {[...new Set(selectedRoute.segments.map((s) => s.label))].map((label) => (
                     <li key={label}>
                       <span
                         className="legend-swatch"
                         style={{
                           background: colorForSegmentLabel(
                             label,
-                            routeResult.segments.map((s) => s.label),
+                            selectedRoute.segments.map((s) => s.label),
                           ),
                         }}
                       />
@@ -664,11 +712,11 @@ export default function App() {
               </div>
             )}
 
-            {routeResult.warnings.length > 0 && (
+            {selectedRoute.warnings.length > 0 && (
               <div className="warnings">
                 <strong>Hinweise:</strong>
                 <ul>
-                  {routeResult.warnings.map((w, i) => (
+                  {selectedRoute.warnings.map((w, i) => (
                     <li key={i}>{w.message}</li>
                   ))}
                 </ul>
@@ -694,10 +742,15 @@ export default function App() {
         <MapView
           startPoint={startPoint}
           onStartPointChange={setStartPoint}
-          routeGeometry={routeResult?.geometry ?? null}
-          routeSegments={routeResult?.segments ?? null}
-          surfaceSegments={routeResult?.surfaceSegments ?? null}
-          smoothnessSegments={routeResult?.smoothnessSegments ?? null}
+          routeGeometry={selectedRoute?.geometry ?? null}
+          routeSegments={selectedRoute?.segments ?? null}
+          surfaceSegments={selectedRoute?.surfaceSegments ?? null}
+          smoothnessSegments={selectedRoute?.smoothnessSegments ?? null}
+          selectedCandidateIndex={selectedCandidateIndex}
+          alternativeCandidates={candidates
+            .map((c, index) => ({ index, geometry: c.geometry }))
+            .filter((c) => c.index !== selectedCandidateIndex)}
+          onSelectCandidate={setSelectedCandidateIndex}
           blockedAreas={blockedAreas}
           onAddBlockedArea={addBlockedArea}
           requiredPoints={requiredPoints}

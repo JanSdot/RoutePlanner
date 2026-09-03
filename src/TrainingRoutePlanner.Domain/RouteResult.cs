@@ -49,4 +49,16 @@ public sealed class RouteResult
     /// (siehe CONCEPT.md Phase-4-Backlog "Windmodellierung"). Rein informativ fuer die
     /// Anzeige, macht die Basis der Zeitschaetzung fuer den Nutzer nachvollziehbar.</summary>
     public WindConditions? Wind { get; init; }
+
+    /// <summary>Der round_trip-Seed, der genau DIESE Geometrie erzeugt hat - erlaubt es, eine
+    /// bestimmte Variante spaeter deterministisch erneut anzufordern (siehe
+    /// RouteConstructionService.BuildRouteWithSeedAsync, genutzt vom GPX-Export, damit der
+    /// Download exakt der angezeigten Route entspricht statt einer frisch berechneten).</summary>
+    public required int Seed { get; init; }
+
+    /// <summary>Weitere, hinreichend unterschiedliche Streckenvarianten (siehe
+    /// RouteRequest.ShowAlternatives) - leer, wenn Alternativen nicht angefordert wurden oder nur
+    /// ein einziger brauchbarer Kandidat gefunden wurde. Jeder Eintrag hat selbst wieder eine
+    /// leere Alternatives-Liste (keine Verschachtelung).</summary>
+    public IReadOnlyList<RouteResult> Alternatives { get; init; } = [];
 }

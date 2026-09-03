@@ -1532,7 +1532,60 @@ Berlin/Brandenburg-Korridordaten verifiziert: ein Trainingsplan mit VO2max-Effor
 ueber die reale GraphHopper/OSM-Korridorsuche weiterhin korrekt einen Korridor (inkl. der
 erwarteten, unveraenderten Eskalations-Warnung bei knappen Kriterien).
 
-Nur auf dem Branch `perf/corridor-spatial-index` (noch nicht nach `main` gemerged/gepusht).
+Zwischenzeitlich nach `main` gemerged (`git merge --no-ff`, Commit `4946305`).
+
+## 6.34 Phase 2 — Alternativrouten (durchgeführt)
+
+Nutzerwunsch: statt einer einzelnen berechneten Route bis zu 3 Alternativen anbieten, unter
+einer Checkbox "Alternativrouten anzeigen" (Standard aus - Performance/GraphHopper-Last des
+Normalfalls bleibt unveraendert). Grundlage ist der bereits bestehende Mehrfach-Seed-Retry
+(6.20/6.29/6.31): unterschiedliche `round_trip`-Seeds liefern nachweislich unterschiedliche
+Streckenfuehrungen (nicht nur andere Scores), heute wurde davon aber nur der eine beste Versuch
+behalten.
+
+**Backend:** `RouteRequest.ShowAlternatives` (neu). `RouteResult` traegt jetzt `Seed` (welcher
+`round_trip`-Seed genau diese Geometrie erzeugt hat) und `Alternatives` (die uebrigen, leer wenn
+nicht angefordert/nicht gefunden). Neue Methode `BuildRouteWithAlternativesAsync`
+(`RouteConstructionService`) probiert bis zu 8 Seeds durch, akzeptiert einen Kandidaten nur,
+wenn er von ALLEN bereits akzeptierten spuerbar abweicht (`IsSufficientlyDifferent`: mindestens
+30% von 40 gleichmaessig gesampelten Punkten liegen mehr als 150m von jeder bereits
+akzeptierten Route entfernt, ueber die neue `PolylineMath.MinDistanceToPolylineMeters`), bricht
+ab bei 3 gefundenen Kandidaten, 60s Zeitbudget (grosszuegiger als das bestehende 45s-Budget der
+einfachen Retry-Schleife, da hier bewusst mehrere gute statt nur ein ausreichender Kandidat
+gesucht wird - nur relevant bei aktiv gesetzter Checkbox) oder ausgeschoepften Seeds. Die
+Badness-Bewertung (`ScoreAttempt`) wurde aus der bestehenden Retry-Schleife extrahiert, damit
+beide Pfade dieselbe Formel nutzen.
+
+**Nebeneffekt/Bugfix:** GPX-Export war bisher ein zweiter, unabhaengiger Request, der die Route
+stillschweigend neu berechnete statt die gerade angezeigte Geometrie zu reproduzieren - bei
+mehreren moeglichen Streckenvarianten waere das potenziell eine ANDERE Variante gewesen. Neue
+Methode `BuildRouteWithSeedAsync` (oeffentlich, keine Retry-/Badness-Logik) wird vom `/route`-
+Endpunkt genutzt, wenn ein GPX-Export einen `seed` mitschickt - das Frontend tut das jetzt
+IMMER (auch ohne Alternativen), behebt das Determinismus-Risiko also generell, nicht nur fuer
+das neue Feature.
+
+**Frontend:** Checkbox neben "Kehrtwenden erlauben". `App.tsx` haelt `candidates = [routeResult,
+...routeResult.alternatives]` und `selectedCandidateIndex` (Default 0); eine neue Liste in der
+Seitenleiste (Farb-Swatch, Distanz/Zeit je Kandidat) waehlt aus. `MapView` bekam
+`selectedCandidateIndex`/`alternativeCandidates`/`onSelectCandidate`: ein neuer Layer
+"route-alternatives-line" zeigt die nicht ausgewaehlten Kandidaten duenn/halbtransparent in
+einer stabilen Pro-Kandidat-Farbe (`ALTERNATIVE_ROUTE_COLORS`), waehrend die ausgewaehlte Route
+(bestehender "route-line"-Layer) dick/deckend in derselben Farbe erscheint - ohne Alternativen
+bleibt die klassische blaue duenne Linie unveraendert (kein Layer-Aufbau, keine Regression).
+Klick auf eine duenne Alternativlinie waehlt sie aus (Klick-Handler einmalig in der
+Karten-Mount-Effect registriert, ueber eine Ref immer den aktuellen `onSelectCandidate`-Callback
+nutzend - sonst haette sich der Handler bei jedem Routen-Update dupliziert).
+
+Getestet: 4 neue Backend-Tests (3 klar getrennte Seeds ergeben 3 unterschiedliche Kandidaten;
+`ShowAlternatives=false` laesst `Alternatives` leer, `Seed` aber gesetzt; identische Geometrie
+bei allen Seeds ergibt nur 1 Kandidaten + Warnung, alle 8 Versuche werden ausgeschoepft;
+`BuildRouteWithSeedAsync` macht genau einen `RoundTripAsync`-Aufruf). Volle Testsuite: 98/98
+gruen. Live im Browser verifiziert: ohne Checkbox weiterhin genau eine Route (Regressionscheck);
+mit Checkbox 3 raeumlich klar unterschiedliche Routen (9,9-10,5 km, 17-18 min) farbig auf der
+Karte plus Liste; Klick auf eine Alternative wechselt Kartenfarbe/-breite, Distanz/Zeit-Anzeige
+und macht die vorherige Auswahl zur duennen Linie; GPX-Download nach Auswahl einer Alternative
+loeste serverseitig nachweislich genau EINEN GraphHopper-Aufruf aus (statt der mehreren fuer die
+urspruengliche Alternativen-Suche noetigen) - bestaetigt den deterministischen Seed-Pfad.
 
 ## 7. Offene Punkte
 

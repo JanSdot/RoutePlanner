@@ -79,4 +79,11 @@ public sealed class RouteRequest
     /// Zeitschaetzung verhaelt sich wie zuvor (windlos). Beeinflusst NUR die Zeitschaetzung,
     /// nicht die Streckenfuehrung selbst (bewusster Scope, siehe CONCEPT.md).</summary>
     public DateTimeOffset? PlannedStartTime { get; init; }
+
+    /// <summary>Wenn true: statt einer einzelnen Route werden bis zu 3 hinreichend
+    /// unterschiedliche Streckenvarianten gesucht (RouteResult.Alternatives), siehe CONCEPT.md
+    /// Abschnitt zu Alternativrouten. Standard false, damit die Performance/GraphHopper-Last des
+    /// heutigen Normalfalls unveraendert bleibt - das Ausprobieren mehrerer guter (statt nur
+    /// eines ausreichenden) Kandidaten kostet spuerbar mehr Zeit.</summary>
+    public bool ShowAlternatives { get; init; } = false;
 }

@@ -37,6 +37,13 @@ public class RouteConstructionServiceTests
         // simulieren (fuer die Refinement-Tests) - Default: flache Platzhalter-Schleife.
         public Func<double, IReadOnlyList<GeoPoint>>? GeometryFactory { get; set; }
 
+        // Wie GeometryFactory, aber zusaetzlich nach Seed unterschieden - fuer die
+        // Alternativrouten-Tests, die simulieren muessen, dass unterschiedliche Seeds
+        // GENUINELY unterschiedliche Schleifen liefern (nicht nur eine andere Distanz). Wird VOR
+        // GeometryFactory geprueft; bestehende Tests setzen dieses Feld nicht und sind daher
+        // unveraendert.
+        public Func<int, double, IReadOnlyList<GeoPoint>>? GeometryFactoryBySeed { get; set; }
+
         // Erlaubt Tests, unterschiedliche Untergrund-Ergebnisse je nach round_trip-Seed zu
         // simulieren (fuer die Untergrund-Vermeidungs-Tests) - Default: kein Untergrund-Anteil.
         public Func<int, IReadOnlyList<SurfaceSegment>>? SurfaceSegmentsBySeed { get; set; }
@@ -66,7 +73,7 @@ public class RouteConstructionServiceTests
             BlockedAreasReceived.Add(blockedAreas);
             ConstructionClosuresReceived.Add(constructionClosures ?? []);
 
-            var geometry = GeometryFactory?.Invoke(distanceMeters) ?? new List<GeoPoint>
+            var geometry = GeometryFactoryBySeed?.Invoke(seed, distanceMeters) ?? GeometryFactory?.Invoke(distanceMeters) ?? new List<GeoPoint>
             {
                 start,
                 new(start.Lat + 0.05, start.Lon),
@@ -1002,5 +1009,102 @@ public class RouteConstructionServiceTests
 
         Assert.All(graphHopper.ConstructionClosuresReceived, received => Assert.Same(closure, Assert.Single(received)));
         Assert.NotEmpty(graphHopper.WaypointCalls);
+    }
+
+    // Kleine rechteckige Schleife, versetzt in eine bestimmte Richtung vom Startpunkt - fuer die
+    // Alternativrouten-Tests, die simulieren muessen, dass unterschiedliche Seeds RAEUMLICH
+    // unterschiedliche Schleifen liefern (siehe FakeGraphHopperClient.GeometryFactoryBySeed).
+    private static IReadOnlyList<GeoPoint> DirectionalLoop(double latOffset, double lonOffset) =>
+    [
+        Start,
+        new(Start.Lat + latOffset, Start.Lon),
+        new(Start.Lat + latOffset, Start.Lon + lonOffset),
+        new(Start.Lat, Start.Lon + lonOffset),
+        Start,
+    ];
+
+    [Fact]
+    public async Task ShowAlternatives_WithDivergentSeeds_ReturnsThreeDistinctCandidates()
+    {
+        var corridors = new FakeCorridorIndex();
+        var ghClient = new FakeGraphHopperClient
+        {
+            // Drei klar raeumlich getrennte Schleifen ("Kleeblatt"-Muster um den Startpunkt) -
+            // jede weicht ueber weite Strecken von den anderen beiden ab.
+            GeometryFactoryBySeed = (seed, _) => seed switch
+            {
+                1 => DirectionalLoop(0.02, 0.0),
+                2 => DirectionalLoop(0.0, 0.02),
+                _ => DirectionalLoop(-0.02, 0.0),
+            },
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            ShowAlternatives = true,
+        });
+
+        Assert.Equal(2, result.Alternatives.Count);
+        var allSeeds = new[] { result.Seed }.Concat(result.Alternatives.Select(a => a.Seed));
+        Assert.Equal(3, allSeeds.Distinct().Count());
+        Assert.All(result.Alternatives, a => Assert.Empty(a.Alternatives));
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("statt 3"));
+    }
+
+    [Fact]
+    public async Task ShowAlternatives_False_LeavesAlternativesEmptyAndSeedSet()
+    {
+        var corridors = new FakeCorridorIndex();
+        var ghClient = new FakeGraphHopperClient();
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(MakeRequest([step]));
+
+        Assert.Empty(result.Alternatives);
+        Assert.Equal(1, result.Seed);
+    }
+
+    [Fact]
+    public async Task ShowAlternatives_AllSeedsProduceSameGeometry_ReturnsOnlyPrimaryWithWarning()
+    {
+        var corridors = new FakeCorridorIndex();
+        var ghClient = new FakeGraphHopperClient(); // Default: identische Platzhalter-Geometrie fuer jeden Seed.
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            ShowAlternatives = true,
+        });
+
+        Assert.Empty(result.Alternatives);
+        Assert.Contains(result.Warnings, w => w.Message.Contains("nur 1 statt 3"));
+        // Da kein Seed hinreichend abweicht, werden alle MaxAlternativeSeedAttempts durchprobiert.
+        Assert.Equal(8, ghClient.RoundTripSeeds.Count);
+    }
+
+    [Fact]
+    public async Task BuildRouteWithSeedAsync_ReturnsDeterministicResultForGivenSeed()
+    {
+        var corridors = new FakeCorridorIndex();
+        var ghClient = new FakeGraphHopperClient();
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        var result = await service.BuildRouteWithSeedAsync(MakeRequest([step]), seed: 5);
+
+        Assert.Single(ghClient.RoundTripSeeds);
+        Assert.Equal(5, ghClient.RoundTripSeeds[0]);
+        Assert.Equal(5, result.Seed);
+        Assert.Empty(result.Alternatives);
     }
 }

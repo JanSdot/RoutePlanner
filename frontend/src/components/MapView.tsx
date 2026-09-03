@@ -31,6 +31,12 @@ const OSM_RASTER_STYLE: StyleSpecification = {
 export const SEGMENT_COLOR_PALETTE = ["#ea580c", "#7c3aed", "#0d9488", "#db2777", "#65a30d", "#0891b2"];
 export const SEGMENT_FALLBACK_COLOR = "#f59e0b";
 
+// Eine Farbe je Kandidat (Index in App.tsx's `candidates`-Array = [primary, ...alternatives]) -
+// bleibt stabil, unabhaengig davon, welcher Kandidat gerade ausgewaehlt ist (nur Breite/Deckkraft
+// unterscheiden ausgewaehlt/nicht ausgewaehlt, siehe applyRoute). Getrennt von
+// SEGMENT_COLOR_PALETTE, da ein anderer Zweck (Routen-Varianten statt Trainings-Intervalle).
+export const ALTERNATIVE_ROUTE_COLORS = ["#2563eb", "#dc2626", "#16a34a"];
+
 export function colorForSegmentLabel(label: string, allLabels: string[]): string {
   const uniqueLabels = [...new Set(allLabels)];
   const index = uniqueLabels.indexOf(label);
@@ -93,6 +99,15 @@ interface MapViewProps {
   onAddBlockedArea: (area: BlockedArea) => void;
   requiredPoints: GeoPoint[];
   onAddRequiredPoint: (point: GeoPoint) => void;
+  // Index des aktuell ausgewaehlten Kandidaten in App.tsx's `candidates`-Array (siehe
+  // ALTERNATIVE_ROUTE_COLORS) - bestimmt die Farbe/Breite/Deckkraft der "route-line" (dick,
+  // volle Deckkraft) gegenueber den duenneren alternativeCandidates-Linien.
+  selectedCandidateIndex: number;
+  // Alle Kandidaten AUSSER dem gerade ausgewaehlten (mit ihrem urspruenglichen Index fuer Farbe/
+  // Klick-Auswahl) - leer, wenn keine Alternativen angefordert/gefunden wurden (dann verhaelt
+  // sich die Karte wie zuvor: nur die eine blaue "route-line").
+  alternativeCandidates: { index: number; geometry: GeoPoint[] }[];
+  onSelectCandidate: (index: number) => void;
   // Automatisch erkannte Baustellen-Sperrungen (VIZ Berlin, siehe CONCEPT.md Abschnitt 6.27) -
   // rein anzeigend, anders als blockedAreas/requiredPoints gibt es hier keinen
   // Karten-Klick-Handler zum Hinzufügen (die Daten kommen aus dem Feed, nicht vom Nutzer).
@@ -126,6 +141,9 @@ export function MapView({
   onAddBlockedArea,
   requiredPoints,
   onAddRequiredPoint,
+  selectedCandidateIndex,
+  alternativeCandidates,
+  onSelectCandidate,
   constructionClosures,
   ignoredClosureIds,
   showConstructionClosures,
@@ -155,6 +173,8 @@ export function MapView({
   onCreatePersonalLockRef.current = onCreatePersonalLock;
   const onProposeClubLockRef = useRef(onProposeClubLock);
   onProposeClubLockRef.current = onProposeClubLock;
+  const onSelectCandidateRef = useRef(onSelectCandidate);
+  onSelectCandidateRef.current = onSelectCandidate;
   // MapLibre's "load" event fires exactly once per map instance. isStyleLoaded() can also
   // transiently report false during unrelated tile activity long after the initial load, so
   // neither is safe to re-check on every route update - track it ourselves instead.
@@ -224,6 +244,22 @@ export function MapView({
         onProposeClubLockRef.current({ lat, lon: lng }).catch(() => {});
         popup.remove();
       });
+    });
+
+    // Klick auf eine (duenn dargestellte) nicht ausgewaehlte Alternativroute waehlt sie aus -
+    // registriert einmalig hier statt in applyRoute (siehe dort), da der Layer bei jedem
+    // Routen-Update neu angelegt werden kann, ein dort registrierter Handler sich aber sonst mit
+    // jedem Aufruf duplizieren wuerde. Wie beim generischen Karten-Klick oben ueber eine Ref
+    // immer den aktuellen Callback nutzen, ohne den Handler selbst neu registrieren zu muessen.
+    map.on("click", "route-alternatives-line", (e) => {
+      const candidateIndex = e.features?.[0]?.properties?.candidateIndex;
+      if (typeof candidateIndex === "number") onSelectCandidateRef.current(candidateIndex);
+    });
+    map.on("mouseenter", "route-alternatives-line", () => {
+      map.getCanvas().style.cursor = "pointer";
+    });
+    map.on("mouseleave", "route-alternatives-line", () => {
+      map.getCanvas().style.cursor = "";
     });
 
     // MapLibre sizes its canvas from the container at construction time; in a flex
@@ -582,8 +618,47 @@ export function MapView({
         });
       }
 
-      // Basis-Route (blau, duenn) - immer die volle Strecke, darauf liegen die
-      // hervorgehobenen Intervall-Segmente aus dem Trainingsplan.
+      // Nicht ausgewaehlte Alternativrouten (duenn, halbtransparent) - VOR der Basis-Route
+      // angelegt, damit die ausgewaehlte Route immer sichtbar obenauf liegt (spaeter
+      // hinzugefuegte Layer werden oben gestapelt).
+      const alternativesGeojson: FeatureCollection<LineString> = {
+        type: "FeatureCollection",
+        features: alternativeCandidates.map((c) => ({
+          type: "Feature",
+          properties: { candidateIndex: c.index },
+          geometry: { type: "LineString", coordinates: c.geometry.map((p) => [p.lon, p.lat]) },
+        })),
+      };
+      const existingAlternativesSource = map.getSource("route-alternatives") as GeoJSONSource | undefined;
+      if (existingAlternativesSource) {
+        existingAlternativesSource.setData(alternativesGeojson);
+      } else {
+        map.addSource("route-alternatives", { type: "geojson", data: alternativesGeojson });
+        map.addLayer({
+          id: "route-alternatives-line",
+          type: "line",
+          source: "route-alternatives",
+          paint: {
+            "line-color": [
+              "match",
+              ["get", "candidateIndex"],
+              ...ALTERNATIVE_ROUTE_COLORS.flatMap((color, i) => [i, color]),
+              SEGMENT_FALLBACK_COLOR,
+            ] as unknown as ExpressionSpecification,
+            "line-width": 3,
+            "line-opacity": 0.6,
+          },
+        });
+      }
+
+      // Basis-Route (die AUSGEWAEHLTE Variante, dick/volle Deckkraft) - immer die volle Strecke,
+      // darauf liegen die hervorgehobenen Intervall-Segmente aus dem Trainingsplan. Farbe bleibt
+      // die klassische Blau, solange keine Alternativen vorliegen (Regressionsfall unveraendert),
+      // sonst dieselbe stabile Pro-Kandidat-Farbe wie die duennen Alternativlinien oben.
+      const routeLineColor = alternativeCandidates.length > 0
+        ? ALTERNATIVE_ROUTE_COLORS[selectedCandidateIndex % ALTERNATIVE_ROUTE_COLORS.length]
+        : "#2563eb";
+      const routeLineWidth = alternativeCandidates.length > 0 ? 5 : 3;
       const existingRouteSource = map.getSource("route") as GeoJSONSource | undefined;
       const routeGeojson: FeatureCollection<LineString> = {
         type: "FeatureCollection",
@@ -604,8 +679,12 @@ export function MapView({
           id: "route-line",
           type: "line",
           source: "route",
-          paint: { "line-color": "#2563eb", "line-width": 3 },
+          paint: { "line-color": routeLineColor, "line-width": routeLineWidth },
         });
+      }
+      if (map.getLayer("route-line")) {
+        map.setPaintProperty("route-line", "line-color", routeLineColor);
+        map.setPaintProperty("route-line", "line-width", routeLineWidth);
       }
 
       const segments = routeSegments ?? [];
@@ -642,6 +721,11 @@ export function MapView({
         (b, p) => b.extend([p.lon, p.lat]),
         new LngLatBounds([routeGeometry[0].lon, routeGeometry[0].lat], [routeGeometry[0].lon, routeGeometry[0].lat]),
       );
+      // Bounds um alle Alternativen erweitern, damit bei aktivierten Alternativrouten alle
+      // Varianten gleichzeitig sichtbar sind, nicht nur die ausgewaehlte.
+      for (const candidate of alternativeCandidates) {
+        for (const p of candidate.geometry) bounds.extend([p.lon, p.lat]);
+      }
       map.fitBounds(bounds, { padding: 40 });
     };
 
@@ -650,7 +734,7 @@ export function MapView({
     } else {
       map.once("load", applyRoute);
     }
-  }, [routeGeometry, routeSegments, surfaceSegments, smoothnessSegments]);
+  }, [routeGeometry, routeSegments, surfaceSegments, smoothnessSegments, selectedCandidateIndex, alternativeCandidates]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

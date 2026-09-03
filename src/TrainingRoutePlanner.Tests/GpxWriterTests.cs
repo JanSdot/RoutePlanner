@@ -24,6 +24,7 @@ public class GpxWriterTests
             Segments = [],
             SurfaceSegments = [],
             SmoothnessSegments = [],
+            Seed = 1,
         };
 
         var gpx = GpxWriter.ToGpx(result, "Test Route");
@@ -65,6 +66,7 @@ public class GpxWriterTests
             ],
             SurfaceSegments = [],
             SmoothnessSegments = [],
+            Seed = 1,
         };
 
         var gpx = GpxWriter.ToGpx(result);

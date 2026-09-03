@@ -253,6 +253,19 @@
   flex-shrink: 0;
 }
 
+/* Auswahlliste bei aktivierten Alternativrouten (siehe App.tsx candidates) - jeder Eintrag
+   waehlbar, der aktuell ausgewaehlte optisch hervorgehoben (analog zu .mode-tabs button.active). */
+.alternatives-list li {
+  cursor: pointer;
+  padding: 0.2rem 0.3rem;
+  border-radius: 4px;
+}
+
+.alternatives-list li.selected {
+  background: #dbeafe;
+  font-weight: 600;
+}
+
 .warnings ul {
   margin: 0.25rem 0 0;
   padding-left: 1.1rem;

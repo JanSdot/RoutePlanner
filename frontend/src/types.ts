@@ -45,6 +45,12 @@ export interface RouteResult {
   // Belag ab (z.B. rissiger alter Asphalt), siehe MapView ROUGH_SURFACE_WARNING_COLOR.
   smoothnessSegments: SurfaceSegment[];
   wind?: WindConditions | null;
+  // Der round_trip-Seed, der genau diese Geometrie erzeugt hat - siehe RouteRequest.seed
+  // (api.ts), genutzt fuer einen deterministischen GPX-Export der ausgewaehlten Variante.
+  seed: number;
+  // Weitere, hinreichend unterschiedliche Streckenvarianten - leer, wenn showAlternatives nicht
+  // gesetzt war oder nur ein Kandidat gefunden wurde. Siehe RouteRequest.showAlternatives.
+  alternatives: RouteResult[];
 }
 
 export type SegmentReusePreference = "PreferReuse" | "PreferVariety";
@@ -107,6 +113,11 @@ export interface RouteFormInput {
   // im String selbst) - wird in api.ts vor dem Versand in UTC umgewandelt, siehe RouteRequest.
   // PlannedStartTime (Backend). null/leer = keine Windvorhersage.
   plannedStartTime?: string | null;
+  // Siehe RouteRequest.ShowAlternatives (Backend) - Checkbox "Alternativrouten anzeigen".
+  showAlternatives: boolean;
+  // Nur beim GPX-Export gesetzt (RouteResult.seed der aktuell ausgewaehlten Variante), damit der
+  // Download deterministisch genau dieser Variante entspricht statt einer frisch berechneten.
+  seed?: number;
   fitFile: File;
 }
 
