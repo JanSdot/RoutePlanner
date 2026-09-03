@@ -1359,6 +1359,46 @@ per direkter MapLibre-Instanz-Inspektion bestätigt (73 echte Baustellen-Linien-
 `visibility` korrekt zwischen `visible`/`none` umschaltend) und zusätzlich per Screenshot
 (orange Baustellen-Linie sichtbar) verifiziert.
 
+## 6.31 Phase 2 — Bugfix: Pflicht-Wegpunkt ohne Effort-Schritt fuhr nur "hin und zurueck" (durchgeführt)
+
+Nutzer meldete: "wenn man einen Punkt setzt, der zur Route gehören soll, wird nur zu dem Punkt
+geroutet und nicht weiter". Live nachgestellt (reiner 20min-GA1-Plan, ein Pflicht-Wegpunkt, kein
+Effort-Schritt): tatsächliche Route war nur 5,8km lang (statt der für 20min GA1 erwarteten
+Distanz) - die Geometrie zeigte einen klaren Hin-Weg zum Pflicht-Wegpunkt, gefolgt von exakt
+denselben Punkten in umgekehrter Reihenfolge zurück.
+
+**Ursache:** Sobald mindestens ein Pflicht-Wegpunkt (oder Effort-Korridor) vorliegt, nutzt
+`BuildRouteAttemptAsync` `GraphHopperClient.RouteThroughWaypointsAsync` statt des
+distanz-korrekten `round_trip`-Ergebnisses (siehe 6.19). Dieser Endpunkt kennt aber KEIN
+Distanzziel - er liefert schlicht den kürzesten Weg zwischen den übergebenen Wegpunkten. Bei nur
+einem Pflicht-Wegpunkt ohne jeden Effort-Schritt bedeutet das mathematisch zwangsläufig "hin und
+auf demselben (kürzesten) Weg zurück", komplett unabhängig von der im Trainingsplan verlangten
+Distanz. Bei Effort-Schritten fiel das bisher kaum auf, weil deren Korridor-Start/Ende-Paare
+i. d. R. mehrere, entlang der groben `round_trip`-Schleife verteilte Punkte liefern, die
+GraphHoppers kürzesten Weg schon von selbst nahe an der gewünschten Form halten - ein einzelner,
+isolierter Pflicht-Wegpunkt hatte dieses "Sicherheitsnetz" nicht.
+
+**Fix:** `BuildRouteAttemptAsync` streut jetzt zusätzliche "Anker"-Wegpunkte
+(`RoughLoopAnchorSpacingMeters = 2000m`) aus der bereits distanz-korrekten `roughLoop`-Geometrie
+(dem Ergebnis des vorherigen `round_trip`-Aufrufs) zwischen die "echten" Wegpunkte ein
+(`AddRoughLoopAnchors`) - sowohl vor dem ersten als auch nach dem letzten sowie zwischen je zwei
+aufeinanderfolgenden Gruppen. Das zwingt GraphHoppers kürzeste-Wege-Suche, zwischen den echten
+Punkten ungefähr der bereits bekannten Schleifenform zu folgen, statt geradewegs abzukürzen.
+Bewusst NUR aktiviert, wenn tatsächlich mindestens ein echter Wegpunkt vorliegt (sonst würde ein
+völlig unbeschränkter Plan plötzlich unnötig `RouteThroughWaypointsAsync` statt des reinen
+`round_trip`-Ergebnisses durchlaufen).
+
+Getestet: 1 neuer Test (Pflicht-Wegpunkt ohne Effort-Schritt erzeugt mehr als die drei
+"nackten" Wegpunkte Start/Pflichtpunkt/Start). Volle Testsuite: 90/90 grün (bei der ersten
+Implementierung fielen 7 bestehende Tests aus, weil die Anker-Einstreuung anfangs auch OHNE
+jeden Wegpunkt griff und dadurch unbeabsichtigt `round_trip`-Anfragen mit Limit-Grenzwerten in
+Wegpunkt-Routing verwandelte - durch die "nur wenn `waypointGroups` nicht leer"-Bedingung
+behoben). Live gegen den echten lokalen GraphHopper verifiziert: derselbe 20min-GA1-Plan mit
+demselben Pflicht-Wegpunkt lieferte danach 15,7km (328 Geometriepunkte) statt zuvor 5,8km, mit
+nur 2 zufälligen Punkt-Wiederholungen (normale Kreuzungs-Overlaps) statt der vorherigen
+durchgängigen Spiegelung - zusätzlich per Screenshot (echte Schleife statt Hin-/Rückweg auf
+identischer Strecke) bestätigt.
+
 ## 7. Offene Punkte
 
 - **Windschatten/Gruppenfahrt** - vom Nutzer vorgeschlagen (2026-08-31), noch keine konkrete

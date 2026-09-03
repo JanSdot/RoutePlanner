@@ -44,6 +44,14 @@ public sealed class RouteConstructionService(
     // dieses Radius liegt - siehe CorridorIndex.CountDisruptiveJunctionsNear.
     private const double JunctionProximityMeters = 25.0;
 
+    // Abstand zwischen zusaetzlichen "Anker"-Wegpunkten, die zwischen den echten Wegpunkten
+    // (Korridor-Start/Ende, Pflicht-Wegpunkte) aus der roughLoop-Geometrie eingestreut werden -
+    // siehe AddRoughLoopAnchors. Groessenordnung wie InitialSearchRadiusMeters, aber fuer einen
+    // anderen Zweck (Distanztreue statt Korridorsuche): eng genug, damit GraphHoppers
+    // Punkt-zu-Punkt-Routing der bekannten Schleifenform folgt statt abzukuerzen, aber nicht so
+    // eng, dass die Wegpunkt-Liste bei langen Routen unnoetig aufgeblaeht wird.
+    private const double RoughLoopAnchorSpacingMeters = 2000.0;
+
     // Heuristische Gewichtung fuer den Fallback-Vergleich, WENN kein Versuch alle Grenzwerte
     // einhaelt: "eine Kreuzung vermeiden ist ungefaehr so viel wert wie 300m unbefestigten
     // Untergrund vermeiden". Bewusst grob - beeinflusst nur die Auswahl des bestmoeglichen
@@ -210,9 +218,30 @@ public sealed class RouteConstructionService(
             waypointGroups.Add((fraction, [requiredPoint]));
         }
 
+        // Zusaetzliche Anker aus der roughLoop-Geometrie zwischen den "echten" Wegpunkten
+        // einstreuen (siehe AddRoughLoopAnchors) - ohne sie wuerde RouteThroughWaypointsAsync bei
+        // duennen Wegpunkt-Listen (z.B. genau EIN Pflicht-Wegpunkt ohne jeden Effort-Schritt) den
+        // kuerzesten Weg zwischen den wenigen echten Punkten waehlen, was bei nur zwei Punkten
+        // schlicht "hin und auf demselben Weg zurueck" bedeutet - komplett unabhaengig von der
+        // eigentlich gewuenschten Trainingsdistanz. Live gemeldeter Bug: "Route geht nur zum
+        // Pflicht-Wegpunkt und nicht weiter" (siehe CONCEPT.md Bugfix-Abschnitt).
         var waypoints = new List<GeoPoint> { request.StartPoint };
-        foreach (var group in waypointGroups.OrderBy(g => g.Fraction))
-            waypoints.AddRange(group.Points);
+        // Anker nur einstreuen, wenn ueberhaupt ein "echter" Wegpunkt vorliegt - sonst wuerde
+        // dieser Schritt selbst bei einem voellig unbeschraenkten Plan (kein Effort-Schritt, kein
+        // Pflicht-Wegpunkt) faelschlich RouteThroughWaypointsAsync statt des reinen,
+        // distanz-korrekten round_trip-Ergebnisses erzwingen (waypoints.Count waere dann > 2,
+        // obwohl es gar keine Wegpunkt-Vorgabe gibt).
+        if (waypointGroups.Count > 0)
+        {
+            var previousFraction = 0.0;
+            foreach (var group in waypointGroups.OrderBy(g => g.Fraction))
+            {
+                AddRoughLoopAnchors(waypoints, roughLoop.Geometry, roughLoopLength, previousFraction, group.Fraction);
+                waypoints.AddRange(group.Points);
+                previousFraction = group.Fraction;
+            }
+            AddRoughLoopAnchors(waypoints, roughLoop.Geometry, roughLoopLength, previousFraction, 1.0);
+        }
         waypoints.Add(request.StartPoint);
 
         var finalRoute = waypoints.Count > 2
@@ -328,6 +357,29 @@ public sealed class RouteConstructionService(
             maxSegment = Math.Max(maxSegment, length);
         }
         return (total, maxSegment);
+    }
+
+    /// <summary>Fuegt zwischen zwei Fraktionen entlang der roughLoop-Geometrie zusaetzliche
+    /// "Anker"-Wegpunkte ein (im Abstand RoughLoopAnchorSpacingMeters), damit
+    /// RouteThroughWaypointsAsync zwischen zwei "echten" Wegpunkten (Korridor-Start/Ende,
+    /// Pflicht-Wegpunkte) ungefaehr der bereits distanz-korrekten Schleifenform folgt, statt den
+    /// kuerzesten (und damit potenziell viel zu kurzen) Weg zu waehlen. Ohne Anker wuerde z.B.
+    /// ein einzelner Pflicht-Wegpunkt ohne jeden Effort-Schritt dazu fuehren, dass die Route
+    /// einfach zu diesem Punkt hin- und auf demselben Weg zurueckfaehrt.</summary>
+    private static void AddRoughLoopAnchors(
+        List<GeoPoint> waypoints, IReadOnlyList<GeoPoint> roughLoopGeometry, double roughLoopLength,
+        double fromFraction, double toFraction)
+    {
+        if (roughLoopLength <= 0 || toFraction <= fromFraction)
+            return;
+
+        var gapMeters = (toFraction - fromFraction) * roughLoopLength;
+        var anchorCount = (int)(gapMeters / RoughLoopAnchorSpacingMeters);
+        for (var i = 1; i <= anchorCount; i++)
+        {
+            var fraction = fromFraction + (toFraction - fromFraction) * i / (anchorCount + 1);
+            waypoints.Add(PolylineMath.PointAtDistance(roughLoopGeometry, fraction * roughLoopLength));
+        }
     }
 
     /// <summary>Fragt round_trip an, verfeinert die pro-Schritt-Distanzen anhand des

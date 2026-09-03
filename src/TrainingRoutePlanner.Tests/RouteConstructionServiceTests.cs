@@ -768,6 +768,47 @@ public class RouteConstructionServiceTests
     }
 
     [Fact]
+    public async Task RequiredPoint_WithoutEffortSteps_InsertsRoughLoopAnchors_NotJustThereAndBack()
+    {
+        // Live gemeldeter Bug: ein einzelner Pflicht-Wegpunkt ohne jeden Effort-Schritt fuehrte
+        // dazu, dass die Route nur "hin- und auf demselben Weg zurueckfuhr" (RouteThroughWaypoints
+        // -Async waehlt sonst schlicht den kuerzesten Weg zwischen den beiden einzigen echten
+        // Wegpunkten Start/Pflichtpunkt) - siehe CONCEPT.md Bugfix-Abschnitt.
+        var corridors = new FakeCorridorIndex();
+        // Quadratische ~18km-Schleife, damit zwischen Start und dem gegenueberliegenden
+        // Pflicht-Wegpunkt (~halbe Schleife) genug Abstand fuer mehrere Anker bleibt (siehe
+        // RouteConstructionService.RoughLoopAnchorSpacingMeters = 2000m).
+        var farCorner = new GeoPoint(Start.Lat + 0.05, Start.Lon + 0.05);
+        var ghClient = new FakeGraphHopperClient
+        {
+            GeometryFactory = _ =>
+            [
+                Start,
+                new GeoPoint(Start.Lat + 0.05, Start.Lon),
+                farCorner,
+                new GeoPoint(Start.Lat, Start.Lon + 0.05),
+                Start,
+            ],
+        };
+        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
+
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
+        await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            RequiredPoints = [farCorner],
+        });
+
+        var waypoints = Assert.Single(ghClient.WaypointCalls);
+        // Ohne den Fix waeren es genau 3 Punkte (Start, Pflicht-Wegpunkt, Start) - "hin und
+        // zurueck". Mit dem Fix muessen zusaetzliche Anker aus der roughLoop-Geometrie
+        // dazwischenliegen.
+        Assert.True(waypoints.Count > 3, $"Erwartet zusaetzliche Anker-Wegpunkte, aber es waren nur {waypoints.Count}");
+    }
+
+    [Fact]
     public async Task AllowUTurnsTrue_DoesNotCheckForReversals()
     {
         var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
