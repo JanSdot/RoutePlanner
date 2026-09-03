@@ -21,6 +21,9 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   if (input.maxTotalUnpavedMeters != null) {
     data.append("maxTotalUnpavedMeters", String(input.maxTotalUnpavedMeters));
   }
+  if (input.maxTotalRoughMeters != null) {
+    data.append("maxTotalRoughMeters", String(input.maxTotalRoughMeters));
+  }
   if (input.maxDisruptiveJunctions != null) {
     data.append("maxDisruptiveJunctions", String(input.maxDisruptiveJunctions));
   }

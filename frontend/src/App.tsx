@@ -78,6 +78,7 @@ export default function App() {
   // da 0 etwas anderes bedeuten wuerde (gar kein unbefestigter Untergrund erlaubt).
   const [maxUnpavedSegmentMeters, setMaxUnpavedSegmentMeters] = useState("");
   const [maxTotalUnpavedMeters, setMaxTotalUnpavedMeters] = useState("");
+  const [maxTotalRoughMeters, setMaxTotalRoughMeters] = useState("");
   const [maxDisruptiveJunctions, setMaxDisruptiveJunctions] = useState("");
   const [maxRouteVariantAttempts, setMaxRouteVariantAttempts] = useState("");
   // Leer = keine Windvorhersage (siehe RouteFormInput.plannedStartTime) - optional, nicht
@@ -244,6 +245,7 @@ export default function App() {
           allowUTurns,
           maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
           maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
+          maxTotalRoughMeters: parseOptionalMeters(maxTotalRoughMeters),
           maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
           maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
           blockedAreas,
@@ -280,6 +282,7 @@ export default function App() {
           allowUTurns,
           maxUnpavedSegmentMeters: parseOptionalMeters(maxUnpavedSegmentMeters),
           maxTotalUnpavedMeters: parseOptionalMeters(maxTotalUnpavedMeters),
+          maxTotalRoughMeters: parseOptionalMeters(maxTotalRoughMeters),
           maxDisruptiveJunctions: parseOptionalMeters(maxDisruptiveJunctions),
           maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
           blockedAreas,
@@ -448,6 +451,16 @@ export default function App() {
               />
             </label>
             <label>
+              Max. rauer Belag insgesamt (m)
+              <input
+                type="number"
+                value={maxTotalRoughMeters}
+                onChange={(e) => setMaxTotalRoughMeters(e.target.value)}
+                min={0}
+                placeholder="kein Limit"
+              />
+            </label>
+            <label>
               Max. Anzahl Ampeln/Kreuzungen
               <input
                 type="number"
@@ -605,6 +618,7 @@ export default function App() {
           routeGeometry={routeResult?.geometry ?? null}
           routeSegments={routeResult?.segments ?? null}
           surfaceSegments={routeResult?.surfaceSegments ?? null}
+          smoothnessSegments={routeResult?.smoothnessSegments ?? null}
           blockedAreas={blockedAreas}
           onAddBlockedArea={addBlockedArea}
           requiredPoints={requiredPoints}

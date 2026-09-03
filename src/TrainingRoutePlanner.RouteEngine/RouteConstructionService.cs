@@ -86,7 +86,7 @@ public sealed class RouteConstructionService(
         // Ohne jedes Limit keinen zusaetzlichen Versuch riskieren - das waere reine
         // Verschwendung von GraphHopper-Anfragen fuer Kriterien, die niemand geprueft haben will.
         if (request.MaxUnpavedSegmentMeters is null && request.MaxTotalUnpavedMeters is null
-            && request.MaxDisruptiveJunctions is null)
+            && request.MaxTotalRoughMeters is null && request.MaxDisruptiveJunctions is null)
             return await BuildRouteAttemptAsync(request, RoundTripSeedBase, wind, ct);
 
         // Mindestens 1, sonst wuerde eine versehentliche 0/negative Nutzereingabe die Schleife
@@ -97,6 +97,7 @@ public sealed class RouteConstructionService(
         RouteResult? bestResult = null;
         var bestBadness = double.MaxValue;
         var bestUnpavedTotalMeters = 0.0;
+        var bestRoughTotalMeters = 0.0;
         var bestJunctionCount = 0;
         var attemptsMade = 0;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -105,25 +106,32 @@ public sealed class RouteConstructionService(
         {
             attemptsMade++;
             var result = await BuildRouteAttemptAsync(request, RoundTripSeedBase + attempt, wind, ct);
-            var (totalUnpavedMeters, maxUnpavedSegmentMeters) =
-                EvaluateUnpavedSurfaces(result.SurfaceSegments, result.SmoothnessSegments);
+            // Getrennt statt wie frueher zu EINER Zahl addiert (siehe CONCEPT.md Bugfix-Abschnitt
+            // zu ueberhoehten Warnungs-Zahlen) - ein rauer, aber befestigter Abschnitt (surface=
+            // asphalt + smoothness=bad) ist etwas ANDERES als echter unbefestigter Untergrund und
+            // bekommt daher sein eigenes Limit (MaxTotalRoughMeters) statt unsichtbar ins
+            // "unbefestigt"-Limit einzufliessen.
+            var (unpavedTotalMeters, maxUnpavedSegmentMeters) = SumBadSegments(result.SurfaceSegments, SurfaceClassifier.IsUnpaved);
+            var (roughTotalMeters, _) = SumBadSegments(result.SmoothnessSegments, SurfaceClassifier.IsBadSmoothness);
             var junctionCount = corridorIndex.CountDisruptiveJunctionsNear(result.Geometry, JunctionProximityMeters);
             var durationMismatchSeconds = Math.Abs((result.EstimatedTotalTime - prescribedTime).TotalSeconds);
 
-            var badness = totalUnpavedMeters + junctionCount * JunctionBadnessWeightMeters
+            var badness = unpavedTotalMeters + roughTotalMeters + junctionCount * JunctionBadnessWeightMeters
                 + durationMismatchSeconds * DurationMismatchBadnessWeightMetersPerSecond;
             if (badness < bestBadness)
             {
                 bestBadness = badness;
                 bestResult = result;
-                bestUnpavedTotalMeters = totalUnpavedMeters;
+                bestUnpavedTotalMeters = unpavedTotalMeters;
+                bestRoughTotalMeters = roughTotalMeters;
                 bestJunctionCount = junctionCount;
             }
 
             var withinSegmentLimit = request.MaxUnpavedSegmentMeters is not double segLimit || maxUnpavedSegmentMeters <= segLimit;
-            var withinTotalLimit = request.MaxTotalUnpavedMeters is not double totalLimit || totalUnpavedMeters <= totalLimit;
+            var withinTotalLimit = request.MaxTotalUnpavedMeters is not double totalLimit || unpavedTotalMeters <= totalLimit;
+            var withinRoughTotalLimit = request.MaxTotalRoughMeters is not double roughLimit || roughTotalMeters <= roughLimit;
             var withinJunctionLimit = request.MaxDisruptiveJunctions is not int juncLimit || junctionCount <= juncLimit;
-            if (withinSegmentLimit && withinTotalLimit && withinJunctionLimit)
+            if (withinSegmentLimit && withinTotalLimit && withinRoughTotalLimit && withinJunctionLimit)
                 return result;
 
             if (stopwatch.Elapsed >= MaxSurfaceAvoidanceTimeBudget)
@@ -135,8 +143,8 @@ public sealed class RouteConstructionService(
         {
             Message = $"Keine der {attemptsMade} probierten Streckenvarianten hielt die gesetzten " +
                       "Grenzwerte (Untergrund/Kreuzungen) ein - die beste gefundene Variante " +
-                      $"({bestUnpavedTotalMeters:F0} m unbefestigt, {bestJunctionCount} Ampel-/Stopp-Kreuzungen) " +
-                      "wurde stattdessen verwendet.",
+                      $"({bestUnpavedTotalMeters:F0} m unbefestigt, {bestRoughTotalMeters:F0} m rauer Belag, " +
+                      $"{bestJunctionCount} Ampel-/Stopp-Kreuzungen) wurde stattdessen verwendet.",
         });
         return new RouteResult
         {
@@ -298,72 +306,28 @@ public sealed class RouteConstructionService(
         return time == TimeSpan.MaxValue ? step.Duration : time;
     }
 
-    /// <summary>Kombiniert Oberflaechen- (surface=unpaved/gravel/...) UND Rauhigkeits-Warnungen
-    /// (smoothness=bad/very_bad/..., siehe CONCEPT.md 6.19 - z.B. Kopfsteinpflaster, das GraphHopper
-    /// via surface=sett ohnehin schon erfasst, aber auch alter/rissiger Asphalt ohne surface-Tag)
-    /// zu EINER "wie viel unangenehmer Untergrund liegt auf dieser Route"-Bewertung.
-    ///
-    /// Frueher wurden ueberschneidende Abschnitte (z.B. Kopfsteinpflaster, das GLEICHZEITIG
-    /// surface=sett UND smoothness=bad traegt - genau der Fall, der 6.19/6.20 ueberhaupt erst
-    /// motiviert hat) bewusst doppelt gezaehlt, da surface- und smoothness-path_details
-    /// unabhaengige Indexbereiche ueber dieselbe Geometrie nutzen. Live gemeldeter Bug: eine
-    /// reale Route zeigte "3224 m unbefestigt" an, obwohl der tatsaechliche unbefestigte Anteil
-    /// nur rund die Haelfte davon war. Jeder SurfaceSegment kennt seit dem Fix seinen
-    /// From/ToIndex in der GraphHopper-Routen-Geometrie (siehe SurfaceSegment.FromIndex) -
-    /// dieselben Indizes ueber beide Listen hinweg identifizieren denselben physischen Punkt,
-    /// wodurch sich ueberschneidende Bereiche jetzt exakt (statt heuristisch) nur einmal
-    /// zaehlen lassen: alle "schlechten" Punkte beider Listen landen in einer nach Index
-    /// sortierten Map, zusammenhaengende Indexlaeufe werden zu einem einzigen Abschnitt
-    /// zusammengefasst und dessen Laenge einmalig ueber die tatsaechliche Geometrie gemessen.</summary>
-    private static (double TotalUnpavedMeters, double MaxUnpavedSegmentMeters) EvaluateUnpavedSurfaces(
-        IReadOnlyList<SurfaceSegment> surfaceSegments, IReadOnlyList<SurfaceSegment> smoothnessSegments)
+    /// <summary>Summiert die Laenge aller "schlechten" Segmente einer Liste (Oberflaechen- ODER
+    /// Smoothness-Segmente, je nach <paramref name="isBad"/>) sowie die Laenge des laengsten
+    /// einzelnen zusammenhaengenden Segments. Bewusst getrennte Aufrufe fuer surface- und
+    /// smoothness-Segmente statt einer kombinierten Zahl (siehe CONCEPT.md Bugfix-Abschnitt zu
+    /// ueberhoehten Warnungs-Zahlen): "unbefestigt" (surface=unpaved/gravel/...) und "rauer
+    /// Belag" (smoothness=bad auf einem an sich befestigten Untergrund, z.B. rissiger alter
+    /// Asphalt) sind fachlich unterschiedliche Dinge und bekommen daher eigene Limits/Zahlen
+    /// statt gemeinsam ins "unbefestigt"-Limit einzufliessen.</summary>
+    private static (double Total, double MaxSegment) SumBadSegments(
+        IReadOnlyList<SurfaceSegment> segments, Func<string, bool> isBad)
     {
-        var pointsByIndex = new SortedDictionary<int, GeoPoint>();
-        CollectBadPoints(surfaceSegments, SurfaceClassifier.IsUnpaved, pointsByIndex);
-        CollectBadPoints(smoothnessSegments, SurfaceClassifier.IsBadSmoothness, pointsByIndex);
-        if (pointsByIndex.Count == 0)
-            return (0.0, 0.0);
-
         var total = 0.0;
         var maxSegment = 0.0;
-        var currentRun = new List<GeoPoint>();
-        var previousIndex = int.MinValue;
-
-        void FlushRun()
-        {
-            if (currentRun.Count < 2)
-            {
-                currentRun.Clear();
-                return;
-            }
-            var length = PolylineMath.TotalLengthMeters(currentRun);
-            total += length;
-            maxSegment = Math.Max(maxSegment, length);
-            currentRun = [];
-        }
-
-        foreach (var (index, point) in pointsByIndex)
-        {
-            if (index != previousIndex + 1)
-                FlushRun();
-            currentRun.Add(point);
-            previousIndex = index;
-        }
-        FlushRun();
-
-        return (total, maxSegment);
-    }
-
-    private static void CollectBadPoints(
-        IReadOnlyList<SurfaceSegment> segments, Func<string, bool> isBad, SortedDictionary<int, GeoPoint> pointsByIndex)
-    {
         foreach (var segment in segments)
         {
             if (!isBad(segment.Surface))
                 continue;
-            for (var i = 0; i < segment.Geometry.Count; i++)
-                pointsByIndex[segment.FromIndex + i] = segment.Geometry[i];
+            var length = PolylineMath.TotalLengthMeters(segment.Geometry);
+            total += length;
+            maxSegment = Math.Max(maxSegment, length);
         }
+        return (total, maxSegment);
     }
 
     /// <summary>Fragt round_trip an, verfeinert die pro-Schritt-Distanzen anhand des

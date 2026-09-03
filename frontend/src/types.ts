@@ -41,6 +41,9 @@ export interface RouteResult {
   warnings: RouteWarning[];
   segments: RouteSegment[];
   surfaceSegments: SurfaceSegment[];
+  // Wie surfaceSegments, aber ueber das "smoothness"-Tag - deckt rauen, aber befestigten
+  // Belag ab (z.B. rissiger alter Asphalt), siehe MapView ROUGH_SURFACE_WARNING_COLOR.
+  smoothnessSegments: SurfaceSegment[];
   wind?: WindConditions | null;
 }
 
@@ -86,6 +89,9 @@ export interface RouteFormInput {
   // null/undefined = keine Begrenzung, siehe RouteRequest.MaxUnpavedSegmentMeters (Backend).
   maxUnpavedSegmentMeters?: number | null;
   maxTotalUnpavedMeters?: number | null;
+  // Begrenzt rauen, aber befestigten Belag (surface=asphalt/... + smoothness=bad) - bewusst
+  // GETRENNT von maxTotalUnpavedMeters, siehe RouteRequest.MaxTotalRoughMeters (Backend).
+  maxTotalRoughMeters?: number | null;
   maxDisruptiveJunctions?: number | null;
   // Wirkungslos, wenn keines der drei Limits oben gesetzt ist - siehe RouteRequest.
   // MaxRouteVariantAttempts (Backend).

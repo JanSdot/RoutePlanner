@@ -407,7 +407,7 @@ public class RouteConstructionServiceTests
     // GraphHopper liefert pro round_trip.seed eine andere Streckenfuehrung - die folgenden Tests
     // nutzen einen reinen GA1-Plan (keine Effort-Schritte -> keine Korridor-/Wegpunkt-Logik
     // beteiligt), damit ausschliesslich das Untergrund-Vermeidungs-Verhalten selbst geprueft wird.
-    private static IReadOnlyList<SurfaceSegment> UnpavedSegmentOfLength(double approxMeters, int fromIndex = 0) =>
+    private static IReadOnlyList<SurfaceSegment> UnpavedSegmentOfLength(double approxMeters) =>
     [
         new SurfaceSegment
         {
@@ -416,21 +416,18 @@ public class RouteConstructionServiceTests
             // Genauigkeit ist nicht noetig, nur klare Groessenordnung ober-/unterhalb der
             // getesteten Grenzwerte.
             Geometry = [new GeoPoint(52.50, 13.50), new GeoPoint(52.50 + approxMeters / 111_200.0, 13.50)],
-            FromIndex = fromIndex,
-            ToIndex = fromIndex + 1,
         },
     ];
 
     // Wie UnpavedSegmentOfLength, aber ueber "smoothness" statt "surface" - siehe CONCEPT.md
-    // 6.19 (smoothness=bad soll wie unbefestigt behandelt werden).
-    private static IReadOnlyList<SurfaceSegment> BadSmoothnessSegmentOfLength(double approxMeters, int fromIndex = 0) =>
+    // 6.19 (smoothness=bad soll wie unbefestigt behandelt werden) und den Bugfix-Abschnitt zu
+    // ueberhoehten Warnungs-Zahlen (eigenes Limit statt gemeinsamer "unbefestigt"-Zahl).
+    private static IReadOnlyList<SurfaceSegment> BadSmoothnessSegmentOfLength(double approxMeters) =>
     [
         new SurfaceSegment
         {
             Surface = "bad",
             Geometry = [new GeoPoint(52.50, 13.50), new GeoPoint(52.50 + approxMeters / 111_200.0, 13.50)],
-            FromIndex = fromIndex,
-            ToIndex = fromIndex + 1,
         },
     ];
 
@@ -508,19 +505,14 @@ public class RouteConstructionServiceTests
     }
 
     [Fact]
-    public async Task OverlappingSurfaceAndSmoothnessBadSegments_AreNotDoubleCounted()
+    public async Task SmoothnessBadSegments_DoNotCountTowardUnpavedLimit()
     {
         var corridors = new FakeCorridorIndex();
-        // Derselbe Indexbereich [0,1] ist gleichzeitig als unbefestigt (surface=gravel) UND als
-        // rau (smoothness=bad) markiert - z.B. Kopfsteinpflaster, das CONCEPT.md 6.20 ueberhaupt
-        // erst motiviert hat. Vor dem Bugfix wurden beide Anteile blind addiert (800m statt
-        // 400m) - das haette das 500m-Limit gerissen, obwohl der tatsaechliche unbefestigte
-        // Anteil nur 400m betraegt.
-        var ghClient = new FakeGraphHopperClient
-        {
-            SurfaceSegmentsBySeed = _ => UnpavedSegmentOfLength(400),
-            SmoothnessSegmentsBySeed = _ => BadSmoothnessSegmentOfLength(400),
-        };
+        // Rauer, aber befestigter Abschnitt (smoothness=bad, z.B. rissiger alter Asphalt) - darf
+        // NICHT ins "unbefestigt"-Limit einfliessen (siehe CONCEPT.md Bugfix-Abschnitt zu
+        // ueberhoehten Warnungs-Zahlen: frueher wurde sowas faelschlich als "unbefestigt"
+        // ausgewiesen, obwohl der Belag tatsaechlich befestigt war).
+        var ghClient = new FakeGraphHopperClient { SmoothnessSegmentsBySeed = _ => BadSmoothnessSegmentOfLength(2000) };
         var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
@@ -537,17 +529,10 @@ public class RouteConstructionServiceTests
     }
 
     [Fact]
-    public async Task NonOverlappingSurfaceAndSmoothnessBadSegments_AreBothCounted()
+    public async Task MaxTotalRoughMeters_LimitsSmoothnessBadSegments_IndependentlyOfUnpavedLimit()
     {
         var corridors = new FakeCorridorIndex();
-        // Zwei DISJUNKTE Indexbereiche (surface bei [0,1], smoothness bei [5,6]) - hier ist
-        // Addition weiterhin korrekt, der Fix darf echte, getrennte schlechte Abschnitte nicht
-        // ebenfalls verschmelzen.
-        var ghClient = new FakeGraphHopperClient
-        {
-            SurfaceSegmentsBySeed = _ => UnpavedSegmentOfLength(300),
-            SmoothnessSegmentsBySeed = _ => BadSmoothnessSegmentOfLength(300, fromIndex: 5),
-        };
+        var ghClient = new FakeGraphHopperClient { SmoothnessSegmentsBySeed = _ => BadSmoothnessSegmentOfLength(600) };
         var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
 
         var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
@@ -556,12 +541,12 @@ public class RouteConstructionServiceTests
             StartPoint = Start,
             Rider = Rider,
             Plan = new TrainingPlan { Steps = [step] },
-            // 500m liegt zwischen den 300m EINES Abschnitts und den 600m BEIDER Abschnitte
-            // zusammen - nur mit korrekter Addition (nicht Verschmelzung) wird das Limit gerissen.
-            MaxTotalUnpavedMeters = 500,
+            MaxTotalRoughMeters = 500,
         });
 
+        Assert.Equal(Enumerable.Range(1, 10), ghClient.RoundTripSeeds);
         Assert.Contains(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
+        Assert.Contains(result.Warnings, w => w.Message.Contains("m rauer Belag"));
     }
 
     [Fact]
@@ -713,31 +698,6 @@ public class RouteConstructionServiceTests
         });
 
         Assert.Contains(result.Warnings, w => w.Message.Contains("KÜRZER"));
-    }
-
-    [Fact]
-    public async Task BadSmoothnessOnly_IsTreatedLikeUnpavedSurface_ForTotalLimit()
-    {
-        var corridors = new FakeCorridorIndex();
-        // Seed 1 hat einen zu langen smoothness=bad-Abschnitt trotz einwandfreier Oberflaeche
-        // (keine SurfaceSegmentsBySeed gesetzt) - Seed 2 erfuellt das Limit.
-        var ghClient = new FakeGraphHopperClient
-        {
-            SmoothnessSegmentsBySeed = seed => seed == 1 ? BadSmoothnessSegmentOfLength(2000) : BadSmoothnessSegmentOfLength(100),
-        };
-        var service = new RouteConstructionService(ghClient, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
-
-        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(30), Rider);
-        var result = await service.BuildRouteAsync(new RouteRequest
-        {
-            StartPoint = Start,
-            Rider = Rider,
-            Plan = new TrainingPlan { Steps = [step] },
-            MaxTotalUnpavedMeters = 500,
-        });
-
-        Assert.Equal([1, 2], ghClient.RoundTripSeeds);
-        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Streckenvarianten"));
     }
 
     [Fact]

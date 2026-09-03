@@ -28,14 +28,6 @@ public sealed class SurfaceSegment
 {
     public required string Surface { get; init; }
     public required IReadOnlyList<GeoPoint> Geometry { get; init; }
-
-    /// <summary>Index des ersten/letzten Punkts von <see cref="Geometry"/> in der
-    /// zugrundeliegenden vollstaendigen Routen-Geometrie (GraphHopper path_details
-    /// [von,bis]-Indizes) - ermoeglicht RouteConstructionService.EvaluateUnpavedSurfaces, echte
-    /// Ueberschneidungen zwischen Oberflaechen- und Smoothness-Segmenten zu erkennen statt sie
-    /// blind aufzuaddieren (siehe CONCEPT.md Bugfix-Abschnitt zu doppelt gezaehlten Metern).</summary>
-    public required int FromIndex { get; init; }
-    public required int ToIndex { get; init; }
 }
 
 public sealed class RouteResult

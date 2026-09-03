@@ -30,6 +30,15 @@ public sealed class RouteRequest
     /// summiert, null = keine Begrenzung. Siehe MaxUnpavedSegmentMeters.</summary>
     public double? MaxTotalUnpavedMeters { get; init; }
 
+    /// <summary>Maximal erlaubte Gesamtlaenge rauer, aber NICHT unbefestigter Abschnitte
+    /// (surface=asphalt/... mit smoothness=bad/very_bad/..., siehe SurfaceClassifier.
+    /// IsBadSmoothness), null = keine Begrenzung. Bewusst GETRENNT von MaxTotalUnpavedMeters:
+    /// vor diesem Feld floss ein rauer, aber befestigter Abschnitt (z.B. rissiger alter Asphalt)
+    /// unsichtbar in dasselbe "unbefestigt"-Limit ein und wurde in Warnungen faelschlich als
+    /// "unbefestigt" bezeichnet, obwohl der Belag tatsaechlich befestigt war - siehe CONCEPT.md
+    /// Bugfix-Abschnitt zu ueberhoehten Warnungs-Zahlen.</summary>
+    public double? MaxTotalRoughMeters { get; init; }
+
     /// <summary>Maximal erlaubte Anzahl unterschiedlicher Ampel-/Stopp-Kreuzungen (siehe
     /// CONCEPT.md 3.4 "harte Unterbrechungen") entlang der GESAMTEN Route, null = keine
     /// Begrenzung. Nutzt denselben Retry-Mechanismus wie MaxUnpavedSegmentMeters/

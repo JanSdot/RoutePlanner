@@ -46,6 +46,16 @@ const UNPAVED_SURFACES = new Set([
 ]);
 export const SURFACE_WARNING_COLOR = "#dc2626";
 
+// GraphHopper/OSM "smoothness"-Werte fuer einen an sich befestigten, aber spuerbar rauen Belag
+// (z.B. rissiger alter Asphalt) - siehe SurfaceClassifier.IsBadSmoothness (Backend), muss damit
+// abgeglichen bleiben. Bewusst als EIGENER Layer/Farbe statt zusammen mit UNPAVED_SURFACES
+// dargestellt: rauer Belag ist etwas anderes als unbefestigter Untergrund (siehe CONCEPT.md
+// Bugfix-Abschnitt zu ueberhoehten Warnungs-Zahlen).
+const BAD_SMOOTHNESS_VALUES = new Set(["bad", "very_bad", "horrible", "very_horrible", "impassable"]);
+// Braun statt Rot (SURFACE_WARNING_COLOR) - klar unterscheidbar, da rauer Belag fachlich etwas
+// anderes ist als unbefestigter Untergrund.
+export const ROUGH_SURFACE_WARNING_COLOR = "#92400e";
+
 // Baustellen-Sperrungen-Layer (VIZ Berlin, siehe CONCEPT.md 6.27) - orange statt rot, um sich
 // klar vom manuell gesperrten BlockedArea-Kreis (#dc2626) UND der Untergrund-Warnung
 // (SURFACE_WARNING_COLOR) zu unterscheiden.
@@ -66,6 +76,10 @@ interface MapViewProps {
   routeGeometry: GeoPoint[] | null;
   routeSegments: RouteSegment[] | null;
   surfaceSegments: SurfaceSegment[] | null;
+  // Wie surfaceSegments, aber ueber das "smoothness"-Tag - eigener Layer/Farbe
+  // (ROUGH_SURFACE_WARNING_COLOR), siehe CONCEPT.md Bugfix-Abschnitt zu ueberhoehten
+  // Warnungs-Zahlen.
+  smoothnessSegments: SurfaceSegment[] | null;
   blockedAreas: BlockedArea[];
   onAddBlockedArea: (area: BlockedArea) => void;
   requiredPoints: GeoPoint[];
@@ -87,6 +101,7 @@ export function MapView({
   routeGeometry,
   routeSegments,
   surfaceSegments,
+  smoothnessSegments,
   blockedAreas,
   onAddBlockedArea,
   requiredPoints,
@@ -430,6 +445,30 @@ export function MapView({
         });
       }
 
+      // Rauer-Belag-Warnung (Analog zur Untergrund-Warnung oben, eigene Farbe/Layer, siehe
+      // ROUGH_SURFACE_WARNING_COLOR) - ebenfalls VOR der Basis-Route angelegt.
+      const roughSegments = (smoothnessSegments ?? []).filter((s) => BAD_SMOOTHNESS_VALUES.has(s.surface));
+      const roughGeojson: FeatureCollection<LineString> = {
+        type: "FeatureCollection",
+        features: roughSegments.map((s) => ({
+          type: "Feature",
+          properties: { smoothness: s.surface },
+          geometry: { type: "LineString", coordinates: s.geometry.map((p) => [p.lon, p.lat]) },
+        })),
+      };
+      const existingRoughSource = map.getSource("rough-warning") as GeoJSONSource | undefined;
+      if (existingRoughSource) {
+        existingRoughSource.setData(roughGeojson);
+      } else {
+        map.addSource("rough-warning", { type: "geojson", data: roughGeojson });
+        map.addLayer({
+          id: "rough-warning-line",
+          type: "line",
+          source: "rough-warning",
+          paint: { "line-color": ROUGH_SURFACE_WARNING_COLOR, "line-width": 9, "line-opacity": 0.55 },
+        });
+      }
+
       // Basis-Route (blau, duenn) - immer die volle Strecke, darauf liegen die
       // hervorgehobenen Intervall-Segmente aus dem Trainingsplan.
       const existingRouteSource = map.getSource("route") as GeoJSONSource | undefined;
@@ -498,7 +537,7 @@ export function MapView({
     } else {
       map.once("load", applyRoute);
     }
-  }, [routeGeometry, routeSegments, surfaceSegments]);
+  }, [routeGeometry, routeSegments, surfaceSegments, smoothnessSegments]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

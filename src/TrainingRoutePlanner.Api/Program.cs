@@ -453,6 +453,7 @@ app.MapPost("/route", async (
     bool allowUTurns;
     double? maxUnpavedSegmentMeters;
     double? maxTotalUnpavedMeters;
+    double? maxTotalRoughMeters;
     int? maxDisruptiveJunctions;
     int? maxRouteVariantAttempts;
     List<BlockedArea> blockedAreas;
@@ -475,6 +476,7 @@ app.MapPost("/route", async (
         allowUTurns = !string.Equals(form["allowUTurns"], "false", StringComparison.OrdinalIgnoreCase);
         maxUnpavedSegmentMeters = ParseOptionalNullable("maxUnpavedSegmentMeters");
         maxTotalUnpavedMeters = ParseOptionalNullable("maxTotalUnpavedMeters");
+        maxTotalRoughMeters = ParseOptionalNullable("maxTotalRoughMeters");
         maxDisruptiveJunctions = ParseOptionalNullableInt("maxDisruptiveJunctions");
         maxRouteVariantAttempts = ParseOptionalNullableInt("maxRouteVariantAttempts");
         blockedAreas = ParseBlockedAreas();
@@ -516,6 +518,7 @@ app.MapPost("/route", async (
         AllowUTurns = allowUTurns,
         MaxUnpavedSegmentMeters = maxUnpavedSegmentMeters,
         MaxTotalUnpavedMeters = maxTotalUnpavedMeters,
+        MaxTotalRoughMeters = maxTotalRoughMeters,
         MaxDisruptiveJunctions = maxDisruptiveJunctions,
         MaxRouteVariantAttempts = maxRouteVariantAttempts,
         BlockedAreas = blockedAreas,

@@ -1311,26 +1311,46 @@ gescheiterten Varianten):
    Anfahrt, wenige Meter bis ~20m auseinander, besonders in Berlin). Eine vom Nutzer als "eine
    Ampel" erlebte Kreuzung konnte so 3-4-fach gezählt werden.
 
-**Umsetzt:**
-- `SurfaceSegment` (Domain) bekommt `FromIndex`/`ToIndex` - die GraphHopper-`path_details`-
-  Indizes des Segments in der Routen-Geometrie, von `GraphHopperClient` beim Parsen gesetzt.
-  `EvaluateUnpavedSurfaces` sammelt alle "schlechten" Punkte (Oberfläche ODER Smoothness) in
-  einer nach Index sortierten Map (dieselbe Karten-Position landet unabhängig von der Quelle auf
-  demselben Index), fasst zusammenhängende Indexläufe zu einem Abschnitt zusammen und misst
-  dessen Länge einmalig über die tatsächliche Geometrie - echte Überschneidungen werden dadurch
-  exakt (nicht mehr heuristisch) nur einmal gezählt, disjunkte Abschnitte weiterhin korrekt
-  addiert.
-- `CorridorIndex` bekommt einen Union-Find-Cluster über alle Ampel-/Stopp-Knoten
-  (`JunctionClusterRadiusMeters = 20.0`, dasselbe 200m-Bucket-Gitter wie die bestehende
-  Nachbarschaftssuche für die Kandidatenauswahl). `CountDisruptiveJunctionsNear` zählt jetzt
-  distinkte Cluster-Wurzeln statt distinkter Node-IDs unter den gefundenen Knoten. 20m ist ein
-  bewusster Kompromiss (deckt übliche Mehrfach-Knoten EINER Kreuzung ab, verschmilzt aber
-  normalerweise keine zwei tatsächlich unterschiedlichen, nahen Kreuzungen).
+**Umgesetzt (Kreuzungen):** `CorridorIndex` bekommt einen Union-Find-Cluster über alle
+Ampel-/Stopp-Knoten (`JunctionClusterRadiusMeters = 20.0`, dasselbe 200m-Bucket-Gitter wie die
+bestehende Nachbarschaftssuche für die Kandidatenauswahl). `CountDisruptiveJunctionsNear` zählt
+jetzt distinkte Cluster-Wurzeln statt distinkter Node-IDs unter den gefundenen Knoten. 20m ist
+ein bewusster Kompromiss (deckt übliche Mehrfach-Knoten EINER Kreuzung ab, verschmilzt aber
+normalerweise keine zwei tatsächlich unterschiedlichen, nahen Kreuzungen). Getestet: 1 neuer
+Test (zwei ~10m auseinanderliegende Knoten zählen als eine Kreuzung) - der bestehende
+140m-Abstand-Test (zwei tatsächlich getrennte Kreuzungen) bleibt unverändert grün.
 
-Getestet: 2 neue Tests für `EvaluateUnpavedSurfaces` (überschneidende Abschnitte werden nur
-einmal gezählt; disjunkte Abschnitte weiterhin beide), 1 neuer Test für die Kreuzungs-
-Clusterung (zwei ~10m auseinanderliegende Knoten zählen als eine Kreuzung) - bestehende Tests
-(u. a. der 140m-Abstand-Test, der zwei tatsächlich getrennte Kreuzungen erwartet) bleiben
-unverändert grün. Volle Testsuite: 90/90 grün. `dotnet build` und `npm run build`
-(Frontend, unverändert kompatibel - die neuen `FromIndex`/`ToIndex`-Felder sind rein additiv)
-beide fehlerfrei.
+**Erster Fix (Unbefestigt-Meter) und live-widerlegte Annahme:** zunächst wurde die
+Doppelzählung durch Verschmelzen überlappender GraphHopper-`path_details`-Indexbereiche behoben
+(`SurfaceSegment.FromIndex`/`ToIndex`). Live gegen die echte, vom Nutzer gemeldete Route
+nachgerechnet (direkter Aufruf des lokalen GraphHopper mit den GPX-Originalpunkten) zeigte
+jedoch: für DIESE Route gab es gar KEINE Index-Überschneidung (0 von 3224m betroffen) - die
+komplette Zahl bestand fast ausschließlich (3035 von 3224m) aus `smoothness=bad`-Abschnitten auf
+ansonsten normalem `surface=asphalt`. Der Doppelzähl-Fix war zwar korrekt, aber für diesen Fall
+wirkungslos - das eigentliche Problem war ein anderes: rauer, aber befestigter Belag wurde in
+der Warnung faelschlich als "unbefestigt" bezeichnet.
+
+**Zweiter, tatsächlicher Fix:** "unbefestigt" (`surface`-Denylist) und "rauer Belag"
+(`smoothness=bad`, unabhängig vom `surface`-Tag) sind jetzt fachlich UND rechnerisch getrennt
+statt zu einer Zahl kombiniert - der Index-Merge-Mechanismus aus dem ersten Fix wurde dafür
+wieder durch die ursprüngliche, einfache Pro-Liste-Summe ersetzt (`SurfaceSegment.FromIndex`/
+`ToIndex` entfernt, nicht mehr gebraucht: beide Zahlen fließen nie mehr zusammen, eine
+Überschneidung zwischen den Listen ist daher kein Problem mehr). Neues, eigenständiges Limit
+`RouteRequest.MaxTotalRoughMeters` (Sidebar: "Max. rauer Belag insgesamt (m)"), das denselben
+Retry-Mechanismus wie `MaxTotalUnpavedMeters` nutzt, aber ausschließlich auf
+`SmoothnessSegments` wirkt. Die Warnung nennt jetzt beide Zahlen getrennt ("X m unbefestigt, Y m
+rauer Belag, Z Ampel-/Stopp-Kreuzungen"). `RouteResult.SmoothnessSegments` wird zusätzlich als
+eigener, brauner Kartenlayer (`ROUGH_SURFACE_WARNING_COLOR = #92400e`) dargestellt - Analog zum
+bestehenden roten Untergrund-Warnungs-Layer, aber klar unterscheidbar (Nutzerwunsch: "Zeichne
+das bitte auch in der Karte ein, allerdings in einer anderen Farbe").
+
+Getestet: bestehende Tests auf die neue Trennung angepasst (smoothness=bad beeinflusst
+`MaxTotalUnpavedMeters` nicht mehr), 1 neuer Test für `MaxTotalRoughMeters` (wirkt unabhängig
+vom Unbefestigt-Limit). Ein zunächst übersehener Fast-Path-Guard in `BuildRouteAsync` (nur die
+drei alten Limit-Felder lösten den Retry-Mechanismus aus, nicht das neue) wurde durch genau
+diesen Test aufgedeckt und mitkorrigiert. Volle Testsuite: 89/89 grün. `dotnet build`/`npm run
+build` beide fehlerfrei. Live gegen den echten lokalen GraphHopper verifiziert (Chrome-
+Vorschau): ein 98,6km-Testloop mit einem realen `smoothness=very_bad`-Abschnitt (Asphalt bei
+52.5648, 13.7296) zeigte den braunen Layer korrekt und separat vom roten Untergrund-Layer -
+Quelle/Layer/Farbe direkt über die MapLibre-Instanz der laufenden Seite geprüft (1 Feature,
+`line-color: #92400e`), zusätzlich per Screenshot bestätigt.
