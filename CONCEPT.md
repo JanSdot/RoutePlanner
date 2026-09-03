@@ -1104,6 +1104,37 @@ Formular sichtbar), nach Registrierung volle App nutzbar, individuelle FTP/Gewic
 64) übersteigen einen Reload unverändert (aus dem gespeicherten Profil geladen, nicht auf die
 Standardwerte zurückgefallen), Abmelden führt zurück zum Login-Gate.
 
+## 6.26 Phase 2 — Render-Deploy: GraphHopper läuft oft in den Health-Check-Timeout (teilweise behoben)
+
+Vom Nutzer gemeldet: GraphHopper-Deploys auf Render laufen öfter in ein Timeout. Recherchiert
+statt geraten (siehe Quellen): Render's Health-Check-Fenster beim Deploy ist **fest auf 15
+Minuten** gesetzt und laut offizieller Doku NICHT konfigurierbar
+([render.com/docs/health-checks](https://render.com/docs/health-checks)) - "Timeout erhöhen"
+ist also keine Option.
+
+**Ursache:** GraphHopper ist ein einzelner Java-Prozess, der den Port erst öffnet, NACHDEM der
+komplette Import (OSM-Parsing + Urban-Density-Berechnung, allein Letzteres lokal ~6 Minuten,
+siehe 6.1/6.2) fertig ist - und das passiert bei jedem Render-Deploy neu, da `graph-cache/`
+nirgends persistiert wird (ephemeres Container-Dateisystem). Zusätzlich: Render's "standard"-
+Plan hat nur **1 vCPU** (recherchiert: [render.com/docs/compute-plans](https://render.com/docs/compute-plans)),
+während `graph.urban_density.threads` bislang auf `4` stand - mehr Threads als physische Kerne
+bringt bei dieser CPU-gebundenen Berechnung keine echte Parallelität, nur unnötigen
+Kontextwechsel-Overhead.
+
+**Umgesetzt:** `deploy/graphhopper-config.yml`s `graph.urban_density.threads` auf `1` reduziert
+(NUR die Deploy-Config - `phase0-spike/graphhopper/config.yml` bleibt lokal bei `4`, da dort
+i.d.R. mehr Kerne verfügbar sind). Kleinerer, risikoarmer Fix - kann von hier aus nicht gegen
+den echten Render-Dienst live verifiziert werden (kein Deploy-Zugriff in dieser Session), muss
+beim nächsten echten Render-Deploy beobachtet werden.
+
+**Noch NICHT umgesetzt, empfohlen als groesserer Hebel:** ein Render Disk fuer `graph-cache/`
+(und `elevation-cache/`) anhängen, damit der fertige Graph Redeploys übersteht - nur Deploys,
+die tatsächlich OSM-Daten oder das Routing-Profil ändern (GraphHopper erkennt das selbst über
+einen Hash-Check, siehe 6.16), bräuchten dann noch einen echten Reimport. Kostet nur wenige
+Cent/Monat (0,25 $/GB) - da GraphHopper ohnehin nie horizontal skaliert wird, entfällt der
+sonst übliche Disk-Nachteil (keine Mehrfach-Instanzen, siehe 6.19-DB-Entscheidung) hier
+komplett. Vom Nutzer noch nicht angefordert, daher offen gelassen.
+
 ## 7. Offene Punkte
 
 - **Windschatten/Gruppenfahrt** - vom Nutzer vorgeschlagen (2026-08-31), noch keine konkrete

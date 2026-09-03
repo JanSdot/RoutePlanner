@@ -5,7 +5,10 @@ graphhopper:
   graph.encoded_values: road_class,surface,smoothness,road_environment,max_speed,average_slope,bike_access,urban_density,racingbike_access,racingbike_average_speed,racingbike_priority,bike_network,mtb_rating,hike_rating,bike_road_access
   # Ohne explizites threads>=1 stuerzt der Import ab (ForkJoinPool mit parallelism=0 wirft
   # IllegalArgumentException) - GraphHopper hat hierfuer keinen brauchbaren Default.
-  graph.urban_density.threads: 4
+  # Bewusst auf 1 gesetzt (abweichend von phase0-spike/graphhopper/config.yml, dort bleibt 4) -
+  # Render's "standard"-Plan hat nur 1 vCPU, mehr Threads als Kerne bringt bei dieser CPU-
+  # gebundenen Berechnung keine echte Parallelitaet, nur Kontextwechsel-Overhead.
+  graph.urban_density.threads: 1
   graph.elevation.provider: srtm
   graph.elevation.cache_dir: ./elevation-cache
   graph.elevation.dataaccess: MMAP
