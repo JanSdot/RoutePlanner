@@ -1104,7 +1104,7 @@ Formular sichtbar), nach Registrierung volle App nutzbar, individuelle FTP/Gewic
 64) übersteigen einen Reload unverändert (aus dem gespeicherten Profil geladen, nicht auf die
 Standardwerte zurückgefallen), Abmelden führt zurück zum Login-Gate.
 
-## 6.26 Phase 2 — Render-Deploy: GraphHopper läuft oft in den Health-Check-Timeout (teilweise behoben)
+## 6.26 Phase 2 — Render-Deploy: GraphHopper läuft oft in den Health-Check-Timeout (behoben)
 
 Vom Nutzer gemeldet: GraphHopper-Deploys auf Render laufen öfter in ein Timeout. Recherchiert
 statt geraten (siehe Quellen): Render's Health-Check-Fenster beim Deploy ist **fest auf 15
@@ -1134,6 +1134,36 @@ einen Hash-Check, siehe 6.16), bräuchten dann noch einen echten Reimport. Koste
 Cent/Monat (0,25 $/GB) - da GraphHopper ohnehin nie horizontal skaliert wird, entfällt der
 sonst übliche Disk-Nachteil (keine Mehrfach-Instanzen, siehe 6.19-DB-Entscheidung) hier
 komplett. Vom Nutzer noch nicht angefordert, daher offen gelassen.
+
+**Der eigentliche architektonische Fix (vom Nutzer explizit gefordert: "der Service muss ja
+auch als lebend erkannt werden, wenn er noch initialisiert"):** ein `HealthProxy` genanntes
+Sidecar (`deploy/graphhopper/HealthProxy.java`), das Renders extern exponierten Port `8989`
+übernimmt und GraphHopper selbst auf einen rein internen Port `18989` verschiebt
+(`deploy/graphhopper-config.yml`). Bewusst NUR mit JDK-Bordmitteln geschrieben
+(`com.sun.net.httpserver.HttpServer`, `java.net.http.HttpClient`) statt z.B. nginx/socat, um
+keine neue Docker-Abhängigkeit einzuführen. Verhalten:
+
+- `/health` antwortet SOFORT mit 200, unabhängig vom GraphHopper-Zustand - Renders Health-Check
+  besteht damit lange bevor der Import fertig ist.
+- Alle anderen Pfade (z.B. `/route`) liefern 503 mit klarer Meldung, solange GraphHopper (intern
+  alle 2s per Health-Poll geprüft) noch nicht bereit ist.
+- Sobald GraphHopper erstmals bereit ist, leitet der Proxy transparent (Methode/Header/Body
+  unverändert) an ihn weiter - dauerhaft, nicht nur einmalig.
+- Falls GraphHopper nach 30 Minuten immer noch nicht bereit ist, beendet sich der Proxy selbst
+  (`System.exit(1)`), damit Docker/Render einen Neustart auslöst, statt einen dauerhaft
+  "gesunden" Proxy vor einem echten Fehler zu verstecken.
+
+`deploy/graphhopper.Dockerfile` bekam dafür eine eigene Build-Stage (`proxybuild`, JDK-Image nur
+zum Kompilieren) sowie einen geänderten `CMD`, der GraphHopper im Hintergrund startet und den
+Proxy als Hauptprozess (PID 1) vorne hält.
+
+**Lokal mit dem echten Produktions-Image verifiziert** (Docker, da diese Session keinen
+Render-Deploy auslösen/beobachten kann): Import des echten 60km-Extrakts dauerte im Container
+970s (≈16min, mit `threads: 1`) - länger als Renders 15-Minuten-Fenster. Währenddessen lieferte
+`/health` durchgehend 200, `/route` durchgehend 503 mit Importhinweis; nach Ablauf der 970s
+schaltete der Proxy automatisch um und `/route` lieferte eine echte GraphHopper-Antwort (200).
+Damit ist die Kernbehauptung bewiesen: ohne diesen Fix wäre der Render-Deploy am
+Health-Check-Timeout gescheitert, mit ihm nicht.
 
 ## 7. Offene Punkte
 

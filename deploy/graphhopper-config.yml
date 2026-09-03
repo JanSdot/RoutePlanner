@@ -87,19 +87,23 @@ graphhopper:
           - if: "smoothness == BAD || smoothness == VERY_BAD || smoothness == HORRIBLE || smoothness == VERY_HORRIBLE || smoothness == IMPASSABLE"
             multiply_by: "0.5"
         speed:
-          # Bewusst NICHT racingbike_average_speed uebernommen: unsere eigene Zeitschaetzung
-          # (PowerSpeedModel, physikbasiert aus FTP/Gewicht/Zonenleistung) haengt an
-          # GraphHoppers zurueckgegebener "time" fuer die Streckenlaenge je Trainingsschritt -
-          # ein variables, GraphHopper-eigenes Geschwindigkeitsmodell wuerde diese Schaetzung
-          # verfaelschen bzw. inkonsistent zur angezeigten "Geschaetzte Zeit" machen. Ein fester
-          # Wert haelt die Zeitschaetzung ausschliesslich an unser eigenes Modell gebunden.
+          # Bewusst NICHT racingbike_average_speed uebernommen. Urspruenglich, weil unsere eigene
+          # Zeitschaetzung GraphHoppers "time" direkt uebernahm - seit CONCEPT.md 6.24 nutzt
+          # RouteConstructionService.EstimateTotalTime ausschliesslich PowerSpeedModel und ignoriert
+          # GraphHoppers "time" komplett, der Grund entfaellt also. Bleibt trotzdem bei einem festen
+          # Wert: die Streckenauswahl/Korridorsuche soll nicht von einem variablen, roadClass-
+          # abhaengigen Geschwindigkeitsmodell verzerrt werden.
           - if: "true"
             limit_to: "25"
 
 server:
+  # NUR intern erreichbar (siehe CONCEPT.md 6.26/deploy/graphhopper/HealthProxy.java) - der
+  # extern exponierte Port 8989 gehoert jetzt dem HealthProxy, der sofort antwortet, waehrend
+  # GraphHopper noch importiert, und erst danach auf diesen Port durchreicht. Lokal (phase0-spike)
+  # bleibt es bei 8989, dort gibt es das Render-Deploy-Timeout-Problem nicht.
   application_connectors:
     - type: http
-      port: 8989
+      port: 18989
   admin_connectors:
     - type: http
       port: 8990
