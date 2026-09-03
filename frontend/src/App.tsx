@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { MapView, colorForSegmentLabel } from "./components/MapView";
 import { WorkoutEditor } from "./components/WorkoutEditor";
 import { AuthPanel } from "./components/AuthPanel";
+import { HelpPanel } from "./components/HelpPanel";
 import {
   requestRoute,
   requestRouteGpx,
@@ -526,6 +527,7 @@ export default function App() {
       </aside>
 
       <main className="map-container">
+        <HelpPanel />
         <MapView
           startPoint={startPoint}
           onStartPointChange={setStartPoint}

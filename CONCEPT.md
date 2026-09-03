@@ -1135,6 +1135,32 @@ Cent/Monat (0,25 $/GB) - da GraphHopper ohnehin nie horizontal skaliert wird, en
 sonst übliche Disk-Nachteil (keine Mehrfach-Instanzen, siehe 6.19-DB-Entscheidung) hier
 komplett. Vom Nutzer noch nicht angefordert, daher offen gelassen.
 
+## 6.27 Phase 2 — Leichtgewichtiges Hilfe-Panel für Erstnutzer (durchgeführt)
+
+Vom Nutzer angefordert: neue Nutzer finden sich in der recht dichten Sidebar (Kartenklick-
+Popup, FIT-Upload vs. Workout-Editor, Nutzerprofil, diverse Limit-Felder, optionaler Wind-
+Zeitpunkt, Ampeln-Layer, GPX-Download) nicht von selbst zurecht. Bewusst KEIN Tour-Framework
+und keine neue Abhängigkeit - ein einfaches, dismissable Panel passend zum bestehenden
+schlichten React/CSS-Stil (Analogon: `AuthPanel`).
+
+**Umgesetzt:** Neue Komponente `frontend/src/components/HelpPanel.tsx` - ein runder "?"-Button
+oben rechts über der Karte öffnet ein zentriertes Modal mit einer kurzen, deutschsprachigen
+Definitionsliste zu genau den oben genannten, für Erstnutzer nicht offensichtlichen
+Bedienelementen. Schließen per ×-Button, Klick auf den abgedunkelten Hintergrund, oder erneut
+öffnen jederzeit über den "?"-Button. `localStorage` (Key `wattloop_help_seen`) merkt sich, ob
+das Panel schon einmal gesehen wurde, damit es beim allerersten Besuch automatisch offen ist,
+bei jedem weiteren Laden aber nicht erneut aufdrängt - Lese-/Schreibzugriffe darauf sind
+bewusst nicht kritisch (try/catch, stiller Fallback), falls localStorage z.B. im privaten Modus
+blockiert ist. In `App.tsx` innerhalb von `.map-container` eingehängt (dessen bereits
+bestehendes `position: relative` reicht für die absolute Positionierung des Buttons).
+
+Getestet: `tsc -b && vite build` fehlerfrei. Visuell im Chrome-Vorschau-Fenster gegen einen
+temporären Test-Einstiegspunkt in `main.tsx` (nur lokal, vor dem Commit wieder entfernt)
+verifiziert: Panel öffnet sich beim ersten Laden automatisch, Schließen per ×-Button und per
+Klick auf den Hintergrund funktioniert, "?"-Button öffnet es erneut, und nach einem Reload
+bleibt es (dank `localStorage`) geschlossen. Ein Login-gebundener End-to-End-Test in der echten
+eingeloggten Ansicht war in dieser Session ohne laufendes Backend/DB nicht möglich.
+
 ## 7. Offene Punkte
 
 - **Windschatten/Gruppenfahrt** - vom Nutzer vorgeschlagen (2026-08-31), noch keine konkrete

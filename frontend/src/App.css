@@ -377,3 +377,74 @@
   cursor: pointer;
   color: #475569;
 }
+
+.help-button {
+  position: absolute;
+  top: 0.85rem;
+  right: 0.85rem;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 50%;
+  border: 1px solid #cbd5e1;
+  background: white;
+  color: #475569;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.help-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.help-panel {
+  width: 420px;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+  background: white;
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  box-sizing: border-box;
+}
+
+.help-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.help-panel-header h2 {
+  font-size: 1.05rem;
+  margin: 0;
+}
+
+.help-close {
+  border: none;
+  background: none;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  color: #64748b;
+  padding: 0.1rem 0.3rem;
+}
+
+.help-panel dt {
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin-top: 0.85rem;
+}
+
+.help-panel dd {
+  font-size: 0.82rem;
+  color: #334155;
+  margin: 0.2rem 0 0;
+}
