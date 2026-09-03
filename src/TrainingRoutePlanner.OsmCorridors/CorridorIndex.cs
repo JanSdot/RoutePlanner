@@ -12,18 +12,28 @@ public sealed class CorridorIndex : ICorridorIndex
 {
     private readonly RoadGraph _graph;
     private readonly List<CorridorProfile> _corridors;
-    private readonly List<BoundingBox> _bboxes;
+    private readonly Dictionary<(int, int), List<int>> _corridorGrid;
     private readonly Dictionary<(int, int), List<long>> _hardNodeGrid;
     private readonly Dictionary<long, long> _hardNodeClusterRoot;
 
-    private readonly record struct BoundingBox(double MinLat, double MaxLat, double MinLon, double MaxLon);
+    // Bucket-Gitter ueber Geometriepunkte ALLER Korridore fuer TryFindCorridor - ersetzt den
+    // frueheren vollstaendigen linearen Scan (siehe CONCEPT.md Bugfix-/Performance-Abschnitt zum
+    // Spatial Index, ehemals Abschnitt 7 "Offene Punkte"). Bewusst ueber GEOMETRIEPUNKTE statt
+    // ueber die Gesamt-Bounding-Box eines Korridors indiziert: Korridore variieren stark in der
+    // Laenge (von kurzen Reststuecken bis zu 55km, siehe CONCEPT.md 6.1) - eine Gesamt-Bbox waere
+    // bei den langen Ausreissern viel zu grob und wuerde kaum Kandidaten ausschliessen. Anders als
+    // beim Ampeln-Gitter (siehe HardNodeGridCellMeters) ist der Suchradius hier NICHT konstant
+    // klein (800m Start, eskaliert bis zum anfahrtszeit-basierten Limit, i.d.R. wenige km) -
+    // TryFindCorridor berechnet die Anzahl zu scannender Nachbarzellen daher radius-abhaengig
+    // statt eines festen 3x3-Scans.
+    private const double CorridorGridCellMeters = 500.0;
 
     // Grobes Gitter ueber die Ampel-/Stopp-Knoten (RoadGraph.HardNodes) fuer
-    // CountDisruptiveJunctionsNear - kein generischer Spatial Index (siehe TryFindCorridor-
-    // Kommentar zum linearen Scan ueber Korridore, das bleibt ein bekannter Folgeschritt),
-    // sondern ein einfaches Bucket-Gitter extra fuer diese eine Abfrageart. Zellgroesse deutlich
-    // groesser als jede sinnvolle proximityMeters-Anfrage, damit ein 3x3-Nachbarzellen-Scan
-    // garantiert alle Kandidaten findet, auch nahe an Zellgrenzen.
+    // CountDisruptiveJunctionsNear - ein einfaches Bucket-Gitter extra fuer diese eine
+    // Abfrageart (die Korridorsuche hat seit dem Spatial-Index-Umbau ihr eigenes, siehe
+    // _corridorGrid/CorridorGridCellMeters). Zellgroesse deutlich groesser als jede sinnvolle
+    // proximityMeters-Anfrage, damit ein 3x3-Nachbarzellen-Scan garantiert alle Kandidaten
+    // findet, auch nahe an Zellgrenzen.
     private const double HardNodeGridCellMeters = 200.0;
 
     // OSM modelliert eine einzelne reale Ampel-/Stopp-Kreuzung oft mit MEHREREN Knoten (ein
@@ -43,14 +53,13 @@ public sealed class CorridorIndex : ICorridorIndex
         _graph = graph;
         var rawCorridors = CorridorExtractor.ExtractCorridors(graph);
         _corridors = new List<CorridorProfile>(rawCorridors.Count);
-        _bboxes = new List<BoundingBox>(rawCorridors.Count);
 
         foreach (var pathNodes in rawCorridors)
         {
             _corridors.Add(CorridorProfileBuilder.Build(graph, pathNodes));
-            _bboxes.Add(ComputeBoundingBox(graph, pathNodes));
         }
 
+        _corridorGrid = BuildCorridorGrid(graph, _corridors);
         _hardNodeGrid = BuildHardNodeGrid(graph);
         _hardNodeClusterRoot = BuildHardNodeClusters(graph, _hardNodeGrid);
     }
@@ -99,6 +108,39 @@ public sealed class CorridorIndex : ICorridorIndex
         }
         return result;
     }
+
+    // Jeder Korridor traegt seinen Index EINMAL pro tatsaechlich beruehrter Zelle ein (lokales
+    // HashSet pro Korridor vermeidet Mehrfacheintraege in derselben Zelle bei dicht
+    // aufeinanderfolgenden Geometriepunkten) - haelt die Kandidatenlisten pro Zelle kompakt.
+    private static Dictionary<(int, int), List<int>> BuildCorridorGrid(RoadGraph graph, List<CorridorProfile> corridors)
+    {
+        var grid = new Dictionary<(int, int), List<int>>();
+        for (var i = 0; i < corridors.Count; i++)
+        {
+            var visitedCells = new HashSet<(int, int)>();
+            foreach (var nodeId in corridors[i].PathNodes)
+            {
+                if (!graph.Coordinates.TryGetValue(nodeId, out var point))
+                    continue;
+
+                var cell = CorridorGridCell(point);
+                if (!visitedCells.Add(cell))
+                    continue;
+
+                if (!grid.TryGetValue(cell, out var list))
+                {
+                    list = new List<int>();
+                    grid[cell] = list;
+                }
+                list.Add(i);
+            }
+        }
+        return grid;
+    }
+
+    private static (int, int) CorridorGridCell(GeoPoint p) => (
+        (int)Math.Floor(p.Lat * 111_320.0 / CorridorGridCellMeters),
+        (int)Math.Floor(p.Lon * 111_320.0 * Math.Cos(GeoMath.DegreesToRadians(p.Lat)) / CorridorGridCellMeters));
 
     private static Dictionary<(int, int), List<long>> BuildHardNodeGrid(RoadGraph graph)
     {
@@ -200,34 +242,28 @@ public sealed class CorridorIndex : ICorridorIndex
     /// geometry passes within <paramref name="searchRadiusMeters"/> of
     /// <paramref name="near"/>.
     ///
-    /// Scaling note: this does a full linear scan over all precomputed corridors (with a
-    /// cheap lat/lon bounding-box pre-filter to skip the expensive per-segment distance
-    /// check for corridors nowhere near the point). Acceptable for the Phase-1 MVP per
-    /// CONCEPT.md; a real spatial index (R-tree/grid) is a known follow-up once corridor
-    /// counts and query volume actually make the linear scan a bottleneck.</summary>
+    /// Scans only the corridors whose geometry touches a grid cell within
+    /// <paramref name="searchRadiusMeters"/> of <paramref name="near"/> (siehe _corridorGrid) -
+    /// vormals ein voller linearer Scan ueber ALLE Korridore, siehe CONCEPT.md
+    /// Bugfix-/Performance-Abschnitt zum Spatial Index. Kandidaten werden ueber ein SortedSet
+    /// gesammelt (nicht HashSet), damit bei Distanz-Gleichstand exakt derselbe Gewinner wie beim
+    /// alten linearen Scan (aufsteigende Index-Reihenfolge) gewaehlt wird - reine
+    /// Performance-Aenderung, keine Verhaltensaenderung.</summary>
     public Corridor? TryFindCorridor(
         GeoPoint near,
         double minLengthMeters,
         double maxDisruptionScore,
         double searchRadiusMeters)
     {
-        double latMarginDeg = searchRadiusMeters / 111_320.0;
-        double lonMarginDeg = searchRadiusMeters / (111_320.0 * Math.Cos(GeoMath.DegreesToRadians(near.Lat)));
+        var candidates = FindCandidateCorridors(near, searchRadiusMeters);
 
         Corridor? best = null;
         double bestDistanceMeters = double.MaxValue;
 
-        for (int i = 0; i < _corridors.Count; i++)
+        foreach (var i in candidates)
         {
             var profile = _corridors[i];
             if (profile.TotalLengthMeters < minLengthMeters)
-            {
-                continue;
-            }
-
-            var bbox = _bboxes[i];
-            if (near.Lat < bbox.MinLat - latMarginDeg || near.Lat > bbox.MaxLat + latMarginDeg
-                || near.Lon < bbox.MinLon - lonMarginDeg || near.Lon > bbox.MaxLon + lonMarginDeg)
             {
                 continue;
             }
@@ -262,6 +298,30 @@ public sealed class CorridorIndex : ICorridorIndex
         return best;
     }
 
+    // "+1" Zelle Sicherheitsmarge wie beim Ampeln-Gitter (siehe HardNodeGridCellMeters-
+    // Kommentar) - garantiert, dass auch Korridor-Punkte nahe einer Zellgrenze gefunden werden.
+    // Anders als dort ist der Radius hier nicht klein/konstant, daher radius-abhaengige
+    // cellSpan statt eines festen 3x3-Scans.
+    private SortedSet<int> FindCandidateCorridors(GeoPoint near, double searchRadiusMeters)
+    {
+        var (centerX, centerY) = CorridorGridCell(near);
+        var cellSpan = (int)Math.Ceiling(searchRadiusMeters / CorridorGridCellMeters) + 1;
+
+        var candidates = new SortedSet<int>();
+        for (var dx = -cellSpan; dx <= cellSpan; dx++)
+        {
+            for (var dy = -cellSpan; dy <= cellSpan; dy++)
+            {
+                if (_corridorGrid.TryGetValue((centerX + dx, centerY + dy), out var list))
+                {
+                    foreach (var i in list)
+                        candidates.Add(i);
+                }
+            }
+        }
+        return candidates;
+    }
+
     private List<GeoPoint> BuildGeometry(CorridorProfile profile, int left, int right)
     {
         var geometry = new List<GeoPoint>(right - left + 1);
@@ -291,22 +351,5 @@ public sealed class CorridorIndex : ICorridorIndex
         }
 
         return best;
-    }
-
-    private static BoundingBox ComputeBoundingBox(RoadGraph graph, IReadOnlyList<long> pathNodes)
-    {
-        double minLat = double.MaxValue, maxLat = double.MinValue;
-        double minLon = double.MaxValue, maxLon = double.MinValue;
-
-        foreach (var nodeId in pathNodes)
-        {
-            var p = graph.Coordinates[nodeId];
-            if (p.Lat < minLat) minLat = p.Lat;
-            if (p.Lat > maxLat) maxLat = p.Lat;
-            if (p.Lon < minLon) minLon = p.Lon;
-            if (p.Lon > maxLon) maxLon = p.Lon;
-        }
-
-        return new BoundingBox(minLat, maxLat, minLon, maxLon);
     }
 }

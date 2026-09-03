@@ -104,6 +104,64 @@ public class CorridorIndexTests
         Assert.Null(corridor);
     }
 
+    /// <summary>Deckt das Bucket-Gitter aus TryFindCorridor ab (siehe CONCEPT.md
+    /// Bugfix-/Performance-Abschnitt zum Spatial Index): zwei Korridore an klar getrennten
+    /// Orten (~33km auseinander, also garantiert in unterschiedlichen, nicht benachbarten
+    /// Gitterzellen) - der weit entfernte darf bei einem kleinen Suchradius weder faelschlich
+    /// gefunden noch das Finden des nahen verhindern.</summary>
+    [Fact]
+    public void TryFindCorridor_WithMultipleCorridors_FindsNearOne_IgnoresFarOne()
+    {
+        var graph = new RoadGraph();
+
+        // Naher Korridor, direkt am Zielpunkt.
+        graph.SetCoordinate(1, new GeoPoint(52.500, 13.400));
+        graph.SetCoordinate(2, new GeoPoint(52.500, 13.401));
+        graph.HardNodes.Add(1);
+        graph.HardNodes.Add(2);
+        graph.AddEdge(1, 2, GeoMath.HaversineMeters(new GeoPoint(52.500, 13.400), new GeoPoint(52.500, 13.401)), "residential");
+
+        // Weit entfernter Korridor (~33km noerdlich) - andere Gitterzelle als der nahe.
+        graph.SetCoordinate(3, new GeoPoint(52.800, 13.400));
+        graph.SetCoordinate(4, new GeoPoint(52.800, 13.401));
+        graph.HardNodes.Add(3);
+        graph.HardNodes.Add(4);
+        graph.AddEdge(3, 4, GeoMath.HaversineMeters(new GeoPoint(52.800, 13.400), new GeoPoint(52.800, 13.401)), "residential");
+
+        var index = new CorridorIndex(graph);
+        Assert.Equal(2, index.CorridorCount);
+
+        var near = new GeoPoint(52.500, 13.4005);
+        var corridor = index.TryFindCorridor(near, minLengthMeters: 50, maxDisruptionScore: 10.0, searchRadiusMeters: 200);
+
+        Assert.NotNull(corridor);
+        Assert.True(corridor!.Start.Lat < 52.6, "Der weit entfernte Korridor haette nicht gefunden werden duerfen");
+    }
+
+    /// <summary>Ein Korridor, der nur mit einem Suchradius gefunden werden kann, der mehrere
+    /// Gitterzellen ueberspannt (CorridorGridCellMeters = 500m, hier ~4000m Abstand) - prueft
+    /// die radius-abhaengige cellSpan-Berechnung, nicht nur den festen 3x3-Fall.</summary>
+    [Fact]
+    public void TryFindCorridor_WithLargeSearchRadius_FindsCorridorAcrossMultipleGridCells()
+    {
+        var graph = new RoadGraph();
+        // ~4000m noerdlich vom Zielpunkt (0.036 Grad Breite * 111.320 km/Grad).
+        graph.SetCoordinate(1, new GeoPoint(52.536, 13.400));
+        graph.SetCoordinate(2, new GeoPoint(52.5362, 13.400));
+        graph.HardNodes.Add(1);
+        graph.HardNodes.Add(2);
+        graph.AddEdge(1, 2, GeoMath.HaversineMeters(new GeoPoint(52.536, 13.400), new GeoPoint(52.5362, 13.400)), "residential");
+
+        var index = new CorridorIndex(graph);
+        var near = new GeoPoint(52.500, 13.400);
+
+        var tooSmallRadius = index.TryFindCorridor(near, minLengthMeters: 10, maxDisruptionScore: 10.0, searchRadiusMeters: 1000);
+        Assert.Null(tooSmallRadius);
+
+        var largeRadius = index.TryFindCorridor(near, minLengthMeters: 10, maxDisruptionScore: 10.0, searchRadiusMeters: 5000);
+        Assert.NotNull(largeRadius);
+    }
+
     [Fact]
     public void CountDisruptiveJunctionsNear_CountsDistinctHardNodesNearRoute_NotDuplicatesOrFarNodes()
     {
