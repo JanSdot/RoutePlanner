@@ -439,7 +439,8 @@ FitParsing, RouteEngine, Api, Tests. **36/36 Tests grün, 0 Build-Warnungen.**
 
 **Verbleibende bewusste Vereinfachung:**
 - Korridor-Suche ist ein linearer Scan mit Bounding-Box-Vorfilter (kein Spatial Index) — für die
-  MVP-Korridoranzahlen ausreichend, bei viel größeren Regionen ggf. zu optimieren.
+  MVP-Korridoranzahlen ausreichend, bei viel größeren Regionen ggf. zu optimieren. (Später durch
+  ein Bucket-Gitter ersetzt, siehe Abschnitt 6.33.)
 
 **End-to-End-Rauchtest (manuell, mit echtem GraphHopper + echtem 60-km-Extrakt):** Ein
 FIT-Workout (20 min Grundlage + 3×[3 min Work, 2 min Recovery]) wurde über `POST /route`
@@ -1491,6 +1492,48 @@ Korrektheits-Nachweis: eine persoenliche Dauer-Sperre GENAU auf einem Punkt der 
 Route angelegt (0m Abstand) liess die Route beim erneuten Berechnen automatisch auf 439,7m
 Abstand ausweichen, ohne dass der Nutzer die Sperre pro Anfrage erneut angeben musste.
 
+## 6.33 Phase 2 — Spatial Index für die Korridorsuche (durchgeführt, Branch `perf/corridor-spatial-index`)
+
+Umsetzung des in Abschnitt 7 dokumentierten, bisher zurückgestellten Backlog-Punkts:
+`CorridorIndex.TryFindCorridor` machte bisher einen vollständigen linearen Scan über ALLE
+vorab extrahierten Korridore pro Aufruf, mit nur einem groben Bounding-Box-Vorfilter über den
+GESAMTEN Korridor (bei Korridorlängen von wenigen Metern bis 55km, siehe 6.1, bei langen
+Ausreissern viel zu ungenau). Ein Aufruf passiert bis zu 5x pro Trainingsschritt
+(Eskalationskette in `FindCorridorWithFallback`) UND zusätzlich bis zu 10x durch den
+Mehrfach-Seed-Retry (6.20/6.29/6.31) - bei mehrschrittigen Plänen mit Limits potenziell
+hunderte volle lineare Scans pro `/route`-Anfrage.
+
+**Umsetzt:** neues Bucket-Gitter `_corridorGrid` (`Dictionary<(int,int), List<int>>`), analog
+zum bestehenden `HardNodeGrid`-Muster (Ampeln/Stoppschilder, 6.13) - aber ueber
+GEOMETRIE-PUNKTE jedes Korridors indiziert statt ueber dessen Gesamt-Bounding-Box (wegen der
+stark variierenden Korridorlaengen), und mit radius-abhaengiger Anzahl gescannter
+Nachbarzellen (`cellSpan = ceil(searchRadiusMeters / 500m) + 1`) statt eines festen 3x3-Scans,
+da der Suchradius hier (anders als bei den Ampeln) stark variiert (800m Start, eskaliert bis
+zum anfahrtszeit-basierten Limit). `TryFindCorridor` ermittelt so zuerst eine (typischerweise
+kleine) Kandidatenmenge, bevor die bestehende, unveraenderte Logik (Laengen-Vorfilter,
+`SlidingWindow.BestWindow`, `MinDistanceToPolyline`) nur noch darueber laeuft - reine
+Performance-Aenderung, keine Verhaltensaenderung (Kandidaten in einem `SortedSet` statt
+`HashSet` gesammelt, damit bei Distanz-Gleichstand exakt derselbe Gewinner wie beim alten
+linearen Scan gewinnt). `_bboxes`/`BoundingBox`/`ComputeBoundingBox` (der alte, nun ueberfluessige
+Vorfilter) entfernt.
+
+Getestet: alle 6 bestehenden `CorridorIndexTests` unveraendert gruen (reine Verhaltenserhaltung
+bestaetigt), 2 neue Tests (mehrere klar getrennte Korridore - der weit entfernte darf weder
+faelschlich gefunden werden noch das Finden des nahen verhindern; ein Korridor, der nur mit
+einem mehrere Gitterzellen ueberspannenden Suchradius gefunden werden kann - prueft die
+radius-abhaengige `cellSpan`-Berechnung). Volle Testsuite: 94/94 gruen. Informeller
+Vorher/Nachher-Benchmark (synthetischer, ueber eine ~60km-Region verstreuter Korridor-Satz,
+temporaerer Test, vor dem Commit wieder entfernt): bei 2.000 Korridoren 8,2ms → 3,2ms fuer 200
+Abfragen (~2,5x), bei 10.000 Korridoren 36,7ms → 7,0ms (~5,2x) - die alte Implementierung
+skaliert linear mit der Korridoranzahl (36,7/8,2 ≈ 4,5x bei 5x mehr Korridoren), die neue bleibt
+nahezu konstant (7,0/3,2 ≈ 2,2x bei 5x mehr Korridoren), wie fuer ein Gitter mit lokal
+begrenzter Kandidatenmenge erwartet. Zusaetzlich live gegen die echten lokalen
+Berlin/Brandenburg-Korridordaten verifiziert: ein Trainingsplan mit VO2max-Effort-Schritt fand
+ueber die reale GraphHopper/OSM-Korridorsuche weiterhin korrekt einen Korridor (inkl. der
+erwarteten, unveraenderten Eskalations-Warnung bei knappen Kriterien).
+
+Nur auf dem Branch `perf/corridor-spatial-index` (noch nicht nach `main` gemerged/gepusht).
+
 ## 7. Offene Punkte
 
 - **Windschatten/Gruppenfahrt** - vom Nutzer vorgeschlagen (2026-08-31), noch keine konkrete
@@ -1503,8 +1546,6 @@ Abstand ausweichen, ohne dass der Nutzer die Sperre pro Anfrage erneut angeben m
 - Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,
   brauchen echte Trainingsfahrten zur Kalibrierung — explizit Teil von Phase 3, nicht vorher
   lösbar)
-- Spatial Index für die Korridorsuche, falls Regionsgröße/Anfragevolumen den linearen Scan zum
-  Flaschenhals machen (Performance-Optimierung, aktuell kein akutes Problem)
 - Garmin.FIT.Sdk 21.214.0 `wkt_step_name`-Dekodierfehler bei gemischten benannten/unbenannten
   Schritten (siehe 6.2) - liegt in der Drittanbieter-SDK, nicht selbst behebbar; betrifft nur
   Anzeige-Labels, nicht die eigentliche Routenplanung
