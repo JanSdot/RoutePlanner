@@ -1191,6 +1191,81 @@ Klick auf den Hintergrund funktioniert, "?"-Button öffnet es erneut, und nach e
 bleibt es (dank `localStorage`) geschlossen. Ein Login-gebundener End-to-End-Test in der echten
 eingeloggten Ansicht war in dieser Session ohne laufendes Backend/DB nicht möglich.
 
+## 6.28 Phase 2 — Baustellen/Straßensperrungen automatisch erkennen und meiden (durchgeführt)
+
+Vorangegangene Recherche (siehe Prompt-Historie dieser Session): OSM-eigene Tags
+(`highway=construction`, `access:conditional=no @ (...)`) sind strukturell ungeeignet - laut
+OSM-Wiki ist `highway=construction` nur für echte Straßenneubauten gedacht, und die für
+temporäre Sperrungen vorgesehene `conditional`-Konvention wird von Freiwilligen nachweislich
+unregelmäßig gepflegt. Gefunden wurde stattdessen eine sehr gut passende, kostenlose, live
+verifizierte Alternative: der offizielle GeoJSON-Feed der Berliner Verkehrsinformationszentrale
+(`api.viz.berlin.de`, Teil der Open-Source-Plattform "Digitale Plattform Stadtverkehr Berlin",
+Datenlizenz Deutschland — Namensnennung 2.0, dieselbe Lizenzfamilie wie das bereits akzeptierte
+BASt-Muster).
+
+**Umgesetzt (Backend):**
+- Neuer Domain-Typ `ConstructionClosure` (`Id`, `Street`, `Geometry` [Punkt ODER LineString],
+  `Severity`, `ValidFrom`/`ValidTo`) — das automatisch erkannte Gegenstück zu `BlockedArea`
+  (dort vom Nutzer manuell gesetzt). `ClosureSeverity` kennt nur `Full` (Vollsperrung) und
+  `Directional` (Fahrtrichtungssperrung) — "keine Sperrung" (reine Fahrstreifenverengung, ~68%
+  der Rohdaten) wird schon beim Parsen verworfen, kein Routing-relevantes Hindernis.
+  `Directional` wird bewusst GENAUSO behandelt wie `Full` (GraphHopper-Wege sind für Radfahrer
+  i.d.R. beidseitig befahrbar, die gesperrte Fahrtrichtung ließe sich nicht trivial mit der
+  eigenen Fahrtrichtung abgleichen - lieber einmal unnötig umfahren als durch eine gesperrte
+  Richtung geroutet werden).
+- `ConstructionClosureFeedParser` (`TrainingRoutePlanner.RouteEngine`): parst sowohl den
+  primären `baustellen_sperrungen_viz.json`-Feed (ISO-8601-Daten, echtes `severity`-Feld,
+  bevorzugt die LineString- vor der Point-Geometrie einer `GeometryCollection`) als auch den
+  `baustellen_sperrungen_tic.json`-Fallback (deutsches Datumsformat, `severity` dort in der
+  Praxis IMMER `null` — konservativ als `Directional` behandelt). Filtert auf
+  Full/Directional-Severity UND ein "heute"-umschließendes Gültigkeitsfenster.
+- `VizBerlinConstructionClosureClient` ruft primär viz.json ab, fällt bei Fehlern auf tic.json
+  zurück, liefert bei Ausfall beider eine leere Liste (additiver Layer, darf die
+  Routenberechnung nie blockieren — wie `IWindForecastClient`).
+- `ConstructionClosureCache` (Singleton, `Volatile`-Referenz) hält den zuletzt abgerufenen
+  Stand; `ConstructionClosureRefreshService` (Api-Projekt, `BackgroundService`) aktualisiert ihn
+  stündlich, passend zur Update-Frequenz der Quelle — kein Live-Abruf pro Nutzer-Request.
+- `GraphHopperClient.BuildCustomModel` kodiert `ConstructionClosure`s genau wie `BlockedArea`s
+  in `custom_model.areas` (`multiply_by: "0"`, ODER-verknüpft in derselben Priority-Regel):
+  punktförmige Baustellen wie ein `BlockedArea`-Kreis (12-Eck-Näherung, 18 m Radius),
+  LineString-Baustellen werden stattdessen entlang der Strecke gepuffert
+  (`BuildLineBufferPolygon` — pro Vertex ein senkrechter Off-set nach links/rechts, dieselbe
+  flache Grad/Meter-Näherung wie beim Kreis).
+- `GET /construction-closures` (`.RequireAuthorization()`) liefert den aktuellen Cache-Stand für
+  Kartenlayer/Sidebar. `POST /route` liest denselben Cache, filtert die vom Nutzer über das neue
+  Formularfeld `ignoredConstructionClosureIds` (JSON-Array von IDs, analog zu `blockedAreas`)
+  bewusst ignorierten Einträge heraus und reicht den Rest über `RouteRequest.ConstructionClosures`
+  an `RouteConstructionService` weiter (dieser kennt weder Cache noch Ignorier-Liste, nur das
+  fertig gefilterte Ergebnis).
+
+**Umgesetzt (Frontend):** `constructionClosures` wird einmalig pro Kartensitzung geladen
+(analog zum Ampeln/Stoppschilder-Layer aus 6.21). Kartenlayer: orange Linie entlang der Straße
+für LineString-Baustellen, orange Kreis für die selteneren punktförmigen Fälle — vom Nutzer
+ignorierte Einträge werden stark abgeblendet statt entfernt dargestellt. Sidebar-Liste
+("Baustellen in der Nähe (Berlin)") zeigt Straße + Sperrgrad je Eintrag mit einem "Ignorieren
+für diese Route"/"Wieder berücksichtigen"-Umschalter (dieselbe Grund-Interaktion wie beim
+Entfernen-Button der manuell gesetzten `BlockedArea`s), inklusive der pflichtigen
+Namensnennung "Digitale Plattform Stadtverkehr Berlin" (Datenlizenz Deutschland — Namensnennung
+2.0) als Quellenangabe direkt unter der Liste.
+
+**Getestet:** `ConstructionClosureFeedParserTests` (Severity-Mapping inkl. Filterung von "keine
+Sperrung", Gültigkeitsfenster in beide Richtungen, LineString-vs-Point-Geometrie-Extraktion,
+fehlendes `to` = unbefristet gültig, deutsches Datumsformat + konservatives
+`Directional`-Mapping für den tic.json-Fallback, fehlende ID wird verworfen);
+`GraphHopperClientTests` (Punkt- UND LineString-Baustellen korrekt als Polygon-Areas kodiert,
+kombiniert mit `BlockedArea`s in derselben ODER-Regel); `RouteConstructionServiceTests`
+(`ConstructionClosures` erreicht unverändert beide GraphHopper-Aufrufe). Zusätzlich EINMALIG
+gegen die echten, live von `api.viz.berlin.de` heruntergeladenen Feed-Daten verifiziert (nicht
+Teil der dauerhaften Testsuite, da abhängig von einer externen, sich stündlich ändernden
+Quelle): von 226 Rohdatensätzen im viz.json-Feed wurden korrekt 73 als aktuell aktive
+Voll-/Richtungssperrungen erkannt (35 Vollsperrung + 38 Fahrtrichtungssperrung) — deckt sich
+exakt mit der vorangegangenen Recherche. Backend-Testsuite: 87/87 grün (74 vorher + 13 neue).
+`dotnet build` und `npm run build` (Frontend) beide fehlerfrei.
+
+**Bewusste Einschränkung** (siehe Abschnitt 7): der VIZ-Berlin-Feed deckt nur Berlin ab -
+Baustellen im Brandenburger Umland von Trainingsstrecken bleiben unerkannt, bis/falls sich eine
+offene Brandenburg-Schnittstelle findet.
+
 ## 7. Offene Punkte
 
 - **Windschatten/Gruppenfahrt** - vom Nutzer vorgeschlagen (2026-08-31), noch keine konkrete
@@ -1208,3 +1283,10 @@ eingeloggten Ansicht war in dieser Session ohne laufendes Backend/DB nicht mögl
 - Garmin.FIT.Sdk 21.214.0 `wkt_step_name`-Dekodierfehler bei gemischten benannten/unbenannten
   Schritten (siehe 6.2) - liegt in der Drittanbieter-SDK, nicht selbst behebbar; betrifft nur
   Anzeige-Labels, nicht die eigentliche Routenplanung
+- **Brandenburg-Abdeckung der Baustellen-Erkennung** (siehe 6.28) - der VIZ-Berlin-Feed deckt
+  nur Berlin ab. Laut Brandenburger Verkehrsministerium existiert ein mit Berlin gemeinsam
+  entwickeltes "einheitliches Baustelleninformationssystem"
+  (`ls.brandenburg.de/ls/de/bauen/baustelleninformationssystem`), es konnte aber nur eine
+  Live-Karten-Ansicht für Menschen gefunden werden, keine bestätigte offene
+  Programmierschnittstelle/GeoJSON-Download für Brandenburg-eigene Baustellen - müsste durch
+  direkte Anfrage beim Landesbetrieb Straßenwesen Brandenburg geklärt werden.

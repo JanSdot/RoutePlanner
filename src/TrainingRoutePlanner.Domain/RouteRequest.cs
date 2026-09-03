@@ -49,6 +49,15 @@ public sealed class RouteRequest
     /// Abschnitt 6.18. Leer = keine Sperrungen.</summary>
     public IReadOnlyList<BlockedArea> BlockedAreas { get; init; } = [];
 
+    /// <summary>Aktuell aktive, automatisch erkannte Baustellen-Sperrungen (VIZ-Berlin-Feed,
+    /// siehe CONCEPT.md Abschnitt 6.27), die bei JEDER Routenberechnung genauso gemieden werden
+    /// wie BlockedAreas - Program.cs fuellt diese Liste bereits VORGEFILTERT (nur "heute"
+    /// gueltige Vollsperrungen/Fahrtrichtungssperrungen, abzueglich der vom Nutzer bewusst
+    /// ignorierten IDs), RouteConstructionService selbst kennt weder den Cache noch die
+    /// Ignorier-Liste. Leer = keine bekannten Baustellen (oder Feed nicht erreichbar/ausserhalb
+    /// Berlins).</summary>
+    public IReadOnlyList<ConstructionClosure> ConstructionClosures { get; init; } = [];
+
     /// <summary>Vom Nutzer auf der Karte markierte Punkte, durch die die finale Route
     /// zwingend fuehren MUSS (als zusaetzliche GraphHopper-Wegpunkte, siehe
     /// RouteConstructionService), siehe CONCEPT.md Abschnitt 6.19. Werden anhand ihrer Position

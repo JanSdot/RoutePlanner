@@ -1,4 +1,4 @@
-import type { AuthResponse, Junction, RouteFormInput, RouteResult, WorkoutBlockSpec } from "./types";
+import type { AuthResponse, ConstructionClosure, Junction, RouteFormInput, RouteResult, WorkoutBlockSpec } from "./types";
 
 // Zur Build-Zeit über Vite gesetzt (siehe .env.production / Render-Umgebungsvariable
 // VITE_API_BASE_URL) - lokal ohne .env-Datei Fallback auf den lokalen API-Port.
@@ -32,6 +32,9 @@ function buildFormData(input: RouteFormInput, format: "json" | "gpx"): FormData 
   }
   if (input.requiredPoints.length > 0) {
     data.append("requiredPoints", JSON.stringify(input.requiredPoints));
+  }
+  if (input.ignoredConstructionClosureIds.length > 0) {
+    data.append("ignoredConstructionClosureIds", JSON.stringify(input.ignoredConstructionClosureIds));
   }
   if (input.plannedStartTime) {
     // new Date(datetimeLocalString) interpretiert den Wert als Browser-Lokalzeit (JS-Spezifikation
@@ -81,6 +84,21 @@ export async function requestJunctions(token: string): Promise<Junction[]> {
     throw new Error(text || `Ampeln/Stoppschilder-Abruf fehlgeschlagen (HTTP ${response.status})`);
   }
   return (await response.json()) as Junction[];
+}
+
+// Aktuell aktive, automatisch erkannte Baustellen-Sperrungen (VIZ Berlin, siehe CONCEPT.md
+// Abschnitt 6.27) - fuer den Kartenlayer UND die Sidebar-Liste. Wie requestJunctions einmalig
+// pro Kartensitzung abgerufen, nicht bei jeder Routenberechnung neu (der serverseitige Cache
+// aktualisiert sich ohnehin nur stuendlich).
+export async function fetchConstructionClosures(token: string): Promise<ConstructionClosure[]> {
+  const response = await fetch(`${API_BASE_URL}/construction-closures`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Baustellen-Abruf fehlgeschlagen (HTTP ${response.status})`);
+  }
+  return (await response.json()) as ConstructionClosure[];
 }
 
 // Registrierungsfehler kommen von POST /auth/register als JSON-Array von Identity-

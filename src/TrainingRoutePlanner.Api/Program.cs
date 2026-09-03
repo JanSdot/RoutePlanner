@@ -15,6 +15,7 @@ using TrainingRoutePlanner.FitParsing;
 using TrainingRoutePlanner.OsmCorridors;
 using TrainingRoutePlanner.PowerModel;
 using TrainingRoutePlanner.RouteEngine;
+using TrainingRoutePlanner.Api;
 
 // Lokal liefert `neon link`/`neon env pull` die DB-Verbindung in eine .env.local am Repo-Root
 // (siehe .neon-Skill-Setup) - .NET liest .env-Dateien nicht selbst, Render setzt DATABASE_URL
@@ -83,6 +84,19 @@ builder.Services.AddHttpClient<IWindForecastClient, OpenMeteoWindForecastClient>
 {
     http.BaseAddress = new Uri("https://api.open-meteo.com");
 });
+
+// VIZ Berlin: offizieller, kostenloser, schluesselloser GeoJSON-Feed der Berliner
+// Verkehrsinformationszentrale fuer aktuelle Baustellen/Sperrungen (siehe CONCEPT.md
+// Abschnitt 6.27 - deckt nur Berlin ab, siehe dortige Recherche + Abschnitt 7). Wird von einem
+// Hintergrund-Dienst stuendlich abgerufen (ConstructionClosureRefreshService), nicht pro
+// Nutzer-Request.
+builder.Services.AddHttpClient<IConstructionClosureFeedClient, VizBerlinConstructionClosureClient>(http =>
+{
+    http.BaseAddress = new Uri("https://api.viz.berlin.de");
+});
+builder.Services.AddSingleton<ConstructionClosureCache>();
+builder.Services.AddSingleton<IConstructionClosureCache>(sp => sp.GetRequiredService<ConstructionClosureCache>());
+builder.Services.AddHostedService<ConstructionClosureRefreshService>();
 
 // CorridorIndex.Load ist teuer (PBF-Parse + Korridor-Extraktion) - laeuft einmalig beim
 // Start, siehe CONCEPT.md 4.1 ("einmalig pro Region, cachebar"). Fuer Phase 1 eine feste
@@ -183,6 +197,14 @@ app.MapGet("/health", () => Results.Ok());
 app.MapGet("/junctions", (ICorridorIndex corridorIndex) => Results.Ok(corridorIndex.GetAllJunctions()))
     .RequireAuthorization()
     .WithName("GetJunctions");
+
+// Aktuell aktive Baustellen-Sperrungen (VIZ Berlin, siehe CONCEPT.md Abschnitt 6.27) - fuer den
+// Kartenlayer UND die Sidebar-Liste im Frontend (dort mit "Ignorieren fuer diese Route"-Button
+// je Eintrag, siehe /route unten). Liest direkt aus dem stuendlich aktualisierten Cache, kein
+// Live-Abruf pro Request.
+app.MapGet("/construction-closures", (IConstructionClosureCache closureCache) => Results.Ok(closureCache.GetActive()))
+    .RequireAuthorization()
+    .WithName("GetConstructionClosures");
 
 // Render terminiert TLS an seinem eigenen Edge und leitet intern per HTTP weiter - ein
 // erzwungenes Redirect hier wuerde ohne Forwarded-Header-Auswertung ins Leere laufen.
@@ -319,7 +341,8 @@ app.MapPost("/workout/build", (List<WorkoutBlockSpec> blocks) =>
 .RequireAuthorization()
 .WithName("BuildWorkoutFit");
 
-app.MapPost("/route", async (HttpRequest request, RouteConstructionService routeService, FitWorkoutParser fitParser) =>
+app.MapPost("/route", async (
+    HttpRequest request, RouteConstructionService routeService, FitWorkoutParser fitParser, IConstructionClosureCache closureCache) =>
 {
     if (!request.HasFormContentType)
         return Results.BadRequest("Erwartet wird multipart/form-data mit fitFile und Profil-Feldern.");
@@ -402,6 +425,27 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         }
     }
 
+    // Nur die IDs (nicht die vollen Baustellen-Daten - die liegen bereits serverseitig im Cache,
+    // siehe /construction-closures), analog zu ParseBlockedAreas ein JSON-Array im Formularfeld.
+    // Siehe CONCEPT.md Abschnitt 6.27: Nutzer kann eine automatisch erkannte Baustelle bewusst
+    // fuer die eigene Route ignorieren, da die Daten editoriell kuratiert/nicht 100% verlaesslich
+    // sind.
+    List<string> ParseIgnoredConstructionClosureIds()
+    {
+        var raw = form["ignoredConstructionClosureIds"].ToString();
+        if (string.IsNullOrWhiteSpace(raw))
+            return [];
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(raw, blockedAreaJsonOptions)
+                ?? throw new ArgumentException("Feld 'ignoredConstructionClosureIds' ist kein gueltiges JSON-Array.");
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException($"Feld 'ignoredConstructionClosureIds' konnte nicht gelesen werden: {ex.Message}");
+        }
+    }
+
     RiderProfile rider;
     GeoPoint start;
     double maxApproachMinutes;
@@ -413,6 +457,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
     int? maxRouteVariantAttempts;
     List<BlockedArea> blockedAreas;
     List<GeoPoint> requiredPoints;
+    List<string> ignoredConstructionClosureIds;
     DateTimeOffset? plannedStartTime;
     try
     {
@@ -434,6 +479,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         maxRouteVariantAttempts = ParseOptionalNullableInt("maxRouteVariantAttempts");
         blockedAreas = ParseBlockedAreas();
         requiredPoints = ParseRequiredPoints();
+        ignoredConstructionClosureIds = ParseIgnoredConstructionClosureIds();
         plannedStartTime = ParseOptionalDateTimeOffset("plannedStartTime");
     }
     catch (ArgumentException ex)
@@ -452,6 +498,14 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         return Results.BadRequest($"FIT-Datei konnte nicht gelesen werden: {ex.Message}");
     }
 
+    // Aktueller Cache-Stand, abzueglich der vom Nutzer fuer DIESE Route bewusst ignorierten
+    // Baustellen (siehe ParseIgnoredConstructionClosureIds) - RouteConstructionService/
+    // GraphHopperClient kennen weder den Cache noch die Ignorier-Liste, nur das fertig
+    // gefilterte Ergebnis (siehe RouteRequest.ConstructionClosures).
+    var activeConstructionClosures = closureCache.GetActive()
+        .Where(c => !ignoredConstructionClosureIds.Contains(c.Id))
+        .ToList();
+
     var routeRequest = new RouteRequest
     {
         StartPoint = start,
@@ -466,6 +520,7 @@ app.MapPost("/route", async (HttpRequest request, RouteConstructionService route
         MaxRouteVariantAttempts = maxRouteVariantAttempts,
         BlockedAreas = blockedAreas,
         RequiredPoints = requiredPoints,
+        ConstructionClosures = activeConstructionClosures,
         PlannedStartTime = plannedStartTime,
     };
 

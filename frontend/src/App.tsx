@@ -12,8 +12,16 @@ import {
   fetchCurrentUser,
   fetchProfile,
   saveProfile,
+  fetchConstructionClosures,
 } from "./api";
-import type { BlockedArea, GeoPoint, RouteResult, SegmentReusePreference, WorkoutBlockSpec } from "./types";
+import type {
+  BlockedArea,
+  ConstructionClosure,
+  GeoPoint,
+  RouteResult,
+  SegmentReusePreference,
+  WorkoutBlockSpec,
+} from "./types";
 import "./App.css";
 
 const AUTH_TOKEN_STORAGE_KEY = "wattloop_auth_token";
@@ -94,6 +102,26 @@ export default function App() {
     setRequiredPoints((prev) => prev.filter((_, i) => i !== index));
   }
 
+  // Automatisch erkannte Baustellen-Sperrungen (VIZ Berlin, siehe CONCEPT.md Abschnitt 6.27) -
+  // einmalig pro Kartensitzung abgerufen (der serverseitige Cache aktualisiert sich ohnehin nur
+  // stuendlich), nicht bei jeder Routenberechnung neu. Der Nutzer kann einzelne Eintraege
+  // bewusst fuer seine Route ignorieren (editoriell kuratierte Daten, nicht 100% fehlerfrei) -
+  // ignoredClosureIds haelt nur die IDs, nicht die vollen Datensaetze.
+  const [constructionClosures, setConstructionClosures] = useState<ConstructionClosure[]>([]);
+  const [ignoredClosureIds, setIgnoredClosureIds] = useState<Set<string>>(new Set());
+
+  function toggleIgnoredClosure(id: string) {
+    setIgnoredClosureIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
@@ -168,6 +196,15 @@ export default function App() {
     setAuthEmail(null);
   }
 
+  // Rein informativ/additiv (siehe CONCEPT.md Abschnitt 6.27) - ein fehlgeschlagener Abruf soll
+  // die App nicht blockieren, der Baustellen-Layer bleibt dann einfach leer.
+  useEffect(() => {
+    if (!authToken) return;
+    fetchConstructionClosures(authToken)
+      .then(setConstructionClosures)
+      .catch(() => {});
+  }, [authToken]);
+
   const [showJunctions, setShowJunctions] = useState(false);
 
   const [inputMode, setInputMode] = useState<InputMode>("file");
@@ -211,6 +248,7 @@ export default function App() {
           maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
           blockedAreas,
           requiredPoints,
+          ignoredConstructionClosureIds: [...ignoredClosureIds],
           plannedStartTime: plannedStartTime || null,
           fitFile: file,
         },
@@ -246,6 +284,7 @@ export default function App() {
           maxRouteVariantAttempts: parseOptionalMeters(maxRouteVariantAttempts),
           blockedAreas,
           requiredPoints,
+          ignoredConstructionClosureIds: [...ignoredClosureIds],
           plannedStartTime: plannedStartTime || null,
           fitFile: file,
         },
@@ -470,6 +509,38 @@ export default function App() {
             </fieldset>
           )}
 
+          {constructionClosures.length > 0 && (
+            <fieldset>
+              <legend>Baustellen in der Nähe (Berlin)</legend>
+              <p className="hint">
+                Automatisch erkannt (VIZ Berlin, stündlich aktualisiert) - werden bei der
+                Routenberechnung standardmäßig gemieden. Nicht jede Kleinbaustelle ist erfasst,
+                und einzelne Einträge können veraltet sein - bei Bedarf ignorieren.
+              </p>
+              <ul className="point-list">
+                {constructionClosures.map((closure) => {
+                  const ignored = ignoredClosureIds.has(closure.id);
+                  return (
+                    <li key={closure.id} className={ignored ? "ignored" : undefined}>
+                      {closure.street || "Unbenannte Straße"}
+                      {" "}({closure.severity === "Full" ? "Vollsperrung" : "Fahrtrichtungssperrung"})
+                      <button type="button" onClick={() => toggleIgnoredClosure(closure.id)}>
+                        {ignored ? "Wieder berücksichtigen" : "Ignorieren für diese Route"}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="hint">
+                Baustellen-Daten:{" "}
+                <a href="https://daten.berlin.de/datensaetze/baustellen-sperrungen-und-sonstige-storungen-von-besonderem-verkehrlichem-interesse" target="_blank" rel="noreferrer">
+                  Digitale Plattform Stadtverkehr Berlin
+                </a>{" "}
+                (Datenlizenz Deutschland – Namensnennung 2.0)
+              </p>
+            </fieldset>
+          )}
+
           <button type="submit" disabled={loading || !startPoint || !hasWorkoutInput}>
             {loading ? "Route wird berechnet…" : "Route berechnen"}
           </button>
@@ -538,6 +609,8 @@ export default function App() {
           onAddBlockedArea={addBlockedArea}
           requiredPoints={requiredPoints}
           onAddRequiredPoint={addRequiredPoint}
+          constructionClosures={constructionClosures}
+          ignoredClosureIds={ignoredClosureIds}
           showJunctions={showJunctions}
           authToken={authToken}
         />
