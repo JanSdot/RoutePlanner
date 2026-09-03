@@ -1266,31 +1266,6 @@ exakt mit der vorangegangenen Recherche. Backend-Testsuite: 87/87 grün (74 vorh
 Baustellen im Brandenburger Umland von Trainingsstrecken bleiben unerkannt, bis/falls sich eine
 offene Brandenburg-Schnittstelle findet.
 
-## 7. Offene Punkte
-
-- **Windschatten/Gruppenfahrt** - vom Nutzer vorgeschlagen (2026-08-31), noch keine konkrete
-  Umsetzungsidee. Naheliegender Ansatz: Windschatten in der Gruppe reduziert effektiv den
-  Luftwiderstand (`RiderProfile.DragAreaCdA`), typischerweise auf ca. 70-90% des Solo-Werts je
-  nach Position/Gruppengroesse - liesse sich als "fahre ich in der Gruppe?"-Schalter oder
-  Gruppengroesse-Eingabe umsetzen, die `PowerSpeedModel`s CdA entsprechend herunterskaliert.
-  Haengt eng mit der Windmodellierung (6.22) und der Zeitschaetzung (6.23) zusammen, da alle
-  drei denselben physikbasierten Geschwindigkeits-Kern beruehren.
-- Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,
-  brauchen echte Trainingsfahrten zur Kalibrierung — explizit Teil von Phase 3, nicht vorher
-  lösbar)
-- Spatial Index für die Korridorsuche, falls Regionsgröße/Anfragevolumen den linearen Scan zum
-  Flaschenhals machen (Performance-Optimierung, aktuell kein akutes Problem)
-- Garmin.FIT.Sdk 21.214.0 `wkt_step_name`-Dekodierfehler bei gemischten benannten/unbenannten
-  Schritten (siehe 6.2) - liegt in der Drittanbieter-SDK, nicht selbst behebbar; betrifft nur
-  Anzeige-Labels, nicht die eigentliche Routenplanung
-- **Brandenburg-Abdeckung der Baustellen-Erkennung** (siehe 6.28) - der VIZ-Berlin-Feed deckt
-  nur Berlin ab. Laut Brandenburger Verkehrsministerium existiert ein mit Berlin gemeinsam
-  entwickeltes "einheitliches Baustelleninformationssystem"
-  (`ls.brandenburg.de/ls/de/bauen/baustelleninformationssystem`), es konnte aber nur eine
-  Live-Karten-Ansicht für Menschen gefunden werden, keine bestätigte offene
-  Programmierschnittstelle/GeoJSON-Download für Brandenburg-eigene Baustellen - müsste durch
-  direkte Anfrage beim Landesbetrieb Straßenwesen Brandenburg geklärt werden.
-
 ## 6.29 Phase 2 — Bugfix: überhöhte "unbefestigt"/Kreuzungs-Zahlen in Warnungen (durchgeführt)
 
 Nutzer meldete: eine heruntergeladene Route zeigte "3224 m unbefestigt, 57 Ampel-/Stopp-
@@ -1354,3 +1329,58 @@ Vorschau): ein 98,6km-Testloop mit einem realen `smoothness=very_bad`-Abschnitt 
 52.5648, 13.7296) zeigte den braunen Layer korrekt und separat vom roten Untergrund-Layer -
 Quelle/Layer/Farbe direkt über die MapLibre-Instanz der laufenden Seite geprüft (1 Feature,
 `line-color: #92400e`), zusätzlich per Screenshot bestätigt.
+
+## 6.30 Phase 2 — Baustellen: eigenes Fenster statt Seitenleiste, ein-/ausblendbarer Kartenlayer (durchgeführt)
+
+Nutzerwunsch: die Baustellen-Liste (6.28) stand bisher fest in der linken Seitenleiste - sollte
+stattdessen in einem separaten Fenster angezeigt werden, dazu ein Kartenlayer analog zum
+bestehenden Ampeln/Stoppschilder-Layer (6.21).
+
+**Umgesetzt:** Neue Komponente `ConstructionClosuresPanel.tsx` - Analog zu `HelpPanel.tsx` (per
+Knopf oben rechts auf der Karte öffnendes Modal, kein neues Browserfenster), Trigger-Button
+(🚧) links neben dem Hilfe-"?"-Button. Zeigt exakt denselben Inhalt wie zuvor die
+Seitenleisten-Sektion (Straße, Sperrgrad, "Ignorieren für diese Route"-Umschalter,
+Quellenangabe) - Daten/Zustand (`constructionClosures`, `ignoredClosureIds`,
+`toggleIgnoredClosure`) bleiben in `App.tsx`, nur die Darstellung wandert. Erscheint nur, wenn
+mindestens eine Baustelle bekannt ist (wie zuvor die bedingt gerenderte Seitenleisten-Sektion).
+Die generischen Modal-CSS-Klassen aus `HelpPanel` (`.help-overlay`/`.help-panel`/...) wurden
+dafür in `.modal-overlay`/`.modal-panel`/`.modal-panel-header`/`.modal-close` umbenannt (jetzt
+von beiden Panels genutzt), `HelpPanel` entsprechend angepasst.
+
+Kartenlayer: `MapView`s bereits bestehende Baustellen-Layer (`construction-closures-line`/
+`-circle`, siehe 6.28) bekommen jetzt eine `visibility`-Layout-Property, umgeschaltet über eine
+neue Checkbox "Baustellen auf der Karte anzeigen" in den Einstellungen - exakt dasselbe Muster
+wie beim Ampeln-Layer (initiale Sichtbarkeit per Ref bei Layer-Erstellung, weiteres Umschalten
+nur über `setLayoutProperty`, kein erneuter Datenabruf).
+
+Getestet: `tsc -b`/`npm run build` fehlerfrei. Live im Chrome-Vorschaufenster: Panel öffnet mit
+vollständiger, korrekt formatierter Baustellen-Liste, Schließen funktioniert; Kartenlayer-Toggle
+per direkter MapLibre-Instanz-Inspektion bestätigt (73 echte Baustellen-Linien-Features,
+`visibility` korrekt zwischen `visible`/`none` umschaltend) und zusätzlich per Screenshot
+(orange Baustellen-Linie sichtbar) verifiziert.
+
+## 7. Offene Punkte
+
+- **Windschatten/Gruppenfahrt** - vom Nutzer vorgeschlagen (2026-08-31), noch keine konkrete
+  Umsetzungsidee. Naheliegender Ansatz: Windschatten in der Gruppe reduziert effektiv den
+  Luftwiderstand (`RiderProfile.DragAreaCdA`), typischerweise auf ca. 70-90% des Solo-Werts je
+  nach Position/Gruppengroesse - liesse sich als "fahre ich in der Gruppe?"-Schalter oder
+  Gruppengroesse-Eingabe umsetzen, die `PowerSpeedModel`s CdA entsprechend herunterskaliert.
+  Haengt eng mit der Windmodellierung (6.22) und der Zeitschaetzung (6.23) zusammen, da alle
+  drei denselben physikbasierten Geschwindigkeits-Kern beruehren.
+- Kalibrierung der genauen Score-Gewichte und Zonen-Schwellwerte (aktuell Platzhalter-Werte,
+  brauchen echte Trainingsfahrten zur Kalibrierung — explizit Teil von Phase 3, nicht vorher
+  lösbar)
+- Spatial Index für die Korridorsuche, falls Regionsgröße/Anfragevolumen den linearen Scan zum
+  Flaschenhals machen (Performance-Optimierung, aktuell kein akutes Problem)
+- Garmin.FIT.Sdk 21.214.0 `wkt_step_name`-Dekodierfehler bei gemischten benannten/unbenannten
+  Schritten (siehe 6.2) - liegt in der Drittanbieter-SDK, nicht selbst behebbar; betrifft nur
+  Anzeige-Labels, nicht die eigentliche Routenplanung
+- **Brandenburg-Abdeckung der Baustellen-Erkennung** (siehe 6.28) - der VIZ-Berlin-Feed deckt
+  nur Berlin ab. Laut Brandenburger Verkehrsministerium existiert ein mit Berlin gemeinsam
+  entwickeltes "einheitliches Baustelleninformationssystem"
+  (`ls.brandenburg.de/ls/de/bauen/baustelleninformationssystem`), es konnte aber nur eine
+  Live-Karten-Ansicht für Menschen gefunden werden, keine bestätigte offene
+  Programmierschnittstelle/GeoJSON-Download für Brandenburg-eigene Baustellen - müsste durch
+  direkte Anfrage beim Landesbetrieb Straßenwesen Brandenburg geklärt werden.
+

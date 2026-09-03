@@ -385,10 +385,12 @@
   color: #475569;
 }
 
-.help-button {
+/* Rund-Button oben rechts auf der Karte, der ein Modal oeffnet (siehe .modal-overlay unten) -
+   gemeinsame Basis fuer HelpPanel UND ConstructionClosuresPanel, jede Instanz setzt nur noch
+   ihre eigene "right"-Position (siehe .help-button/.construction-button). */
+.map-icon-button {
   position: absolute;
   top: 0.85rem;
-  right: 0.85rem;
   width: 1.9rem;
   height: 1.9rem;
   border-radius: 50%;
@@ -401,7 +403,16 @@
   z-index: 10;
 }
 
-.help-overlay {
+.help-button {
+  right: 0.85rem;
+}
+
+/* Links neben .help-button, gleiche Reihe. */
+.construction-button {
+  right: 3.05rem;
+}
+
+.modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.4);
@@ -411,7 +422,7 @@
   z-index: 100;
 }
 
-.help-panel {
+.modal-panel {
   width: 420px;
   max-width: calc(100vw - 2rem);
   max-height: calc(100vh - 4rem);
@@ -422,19 +433,19 @@
   box-sizing: border-box;
 }
 
-.help-panel-header {
+.modal-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 0.5rem;
 }
 
-.help-panel-header h2 {
+.modal-panel-header h2 {
   font-size: 1.05rem;
   margin: 0;
 }
 
-.help-close {
+.modal-close {
   border: none;
   background: none;
   font-size: 1.3rem;

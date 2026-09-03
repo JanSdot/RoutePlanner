@@ -3,6 +3,7 @@ import { MapView, colorForSegmentLabel } from "./components/MapView";
 import { WorkoutEditor } from "./components/WorkoutEditor";
 import { AuthPanel } from "./components/AuthPanel";
 import { HelpPanel } from "./components/HelpPanel";
+import { ConstructionClosuresPanel } from "./components/ConstructionClosuresPanel";
 import {
   requestRoute,
   requestRouteGpx,
@@ -207,6 +208,7 @@ export default function App() {
   }, [authToken]);
 
   const [showJunctions, setShowJunctions] = useState(false);
+  const [showConstructionClosures, setShowConstructionClosures] = useState(false);
 
   const [inputMode, setInputMode] = useState<InputMode>("file");
   const [fitFile, setFitFile] = useState<File | null>(null);
@@ -430,6 +432,14 @@ export default function App() {
               />
               Ampeln/Stoppschilder auf der Karte anzeigen
             </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={showConstructionClosures}
+                onChange={(e) => setShowConstructionClosures(e.target.checked)}
+              />
+              Baustellen auf der Karte anzeigen
+            </label>
             <label>
               Max. Länge je unbefestigtem Abschnitt (m)
               <input
@@ -522,38 +532,6 @@ export default function App() {
             </fieldset>
           )}
 
-          {constructionClosures.length > 0 && (
-            <fieldset>
-              <legend>Baustellen in der Nähe (Berlin)</legend>
-              <p className="hint">
-                Automatisch erkannt (VIZ Berlin, stündlich aktualisiert) - werden bei der
-                Routenberechnung standardmäßig gemieden. Nicht jede Kleinbaustelle ist erfasst,
-                und einzelne Einträge können veraltet sein - bei Bedarf ignorieren.
-              </p>
-              <ul className="point-list">
-                {constructionClosures.map((closure) => {
-                  const ignored = ignoredClosureIds.has(closure.id);
-                  return (
-                    <li key={closure.id} className={ignored ? "ignored" : undefined}>
-                      {closure.street || "Unbenannte Straße"}
-                      {" "}({closure.severity === "Full" ? "Vollsperrung" : "Fahrtrichtungssperrung"})
-                      <button type="button" onClick={() => toggleIgnoredClosure(closure.id)}>
-                        {ignored ? "Wieder berücksichtigen" : "Ignorieren für diese Route"}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-              <p className="hint">
-                Baustellen-Daten:{" "}
-                <a href="https://daten.berlin.de/datensaetze/baustellen-sperrungen-und-sonstige-storungen-von-besonderem-verkehrlichem-interesse" target="_blank" rel="noreferrer">
-                  Digitale Plattform Stadtverkehr Berlin
-                </a>{" "}
-                (Datenlizenz Deutschland – Namensnennung 2.0)
-              </p>
-            </fieldset>
-          )}
-
           <button type="submit" disabled={loading || !startPoint || !hasWorkoutInput}>
             {loading ? "Route wird berechnet…" : "Route berechnen"}
           </button>
@@ -612,6 +590,11 @@ export default function App() {
 
       <main className="map-container">
         <HelpPanel />
+        <ConstructionClosuresPanel
+          closures={constructionClosures}
+          ignoredClosureIds={ignoredClosureIds}
+          onToggleIgnored={toggleIgnoredClosure}
+        />
         <MapView
           startPoint={startPoint}
           onStartPointChange={setStartPoint}
@@ -625,6 +608,7 @@ export default function App() {
           onAddRequiredPoint={addRequiredPoint}
           constructionClosures={constructionClosures}
           ignoredClosureIds={ignoredClosureIds}
+          showConstructionClosures={showConstructionClosures}
           showJunctions={showJunctions}
           authToken={authToken}
         />

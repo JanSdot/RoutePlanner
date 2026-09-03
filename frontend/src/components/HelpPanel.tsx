@@ -33,7 +33,7 @@ export function HelpPanel() {
     <>
       <button
         type="button"
-        className="help-button"
+        className="map-icon-button help-button"
         onClick={() => setOpen(true)}
         aria-label="Hilfe anzeigen"
         title="Hilfe"
@@ -42,11 +42,11 @@ export function HelpPanel() {
       </button>
 
       {open && (
-        <div className="help-overlay" onClick={close}>
-          <div className="help-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="help-panel-header">
+        <div className="modal-overlay" onClick={close}>
+          <div className="modal-panel help-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-panel-header">
               <h2>Kurzanleitung</h2>
-              <button type="button" className="help-close" onClick={close} aria-label="Schließen">
+              <button type="button" className="modal-close" onClick={close} aria-label="Schließen">
                 ×
               </button>
             </div>
@@ -90,6 +90,14 @@ export function HelpPanel() {
               <dd>
                 Blendet Ampeln und Stoppschilder als zusätzlichen Layer auf der Karte ein, um
                 die Streckenwahl besser einschätzen zu können.
+              </dd>
+
+              <dt>Baustellen (🚧-Button)</dt>
+              <dd>
+                Zeigt die automatisch erkannten Baustellen-Sperrungen (Berlin) in einer eigenen
+                Liste an, inklusive der Möglichkeit, einzelne Einträge für die aktuelle Route zu
+                ignorieren. Ein eigener Kartenlayer (ebenfalls in den Einstellungen ein-/
+                ausblendbar) zeigt sie zusätzlich direkt auf der Karte.
               </dd>
 
               <dt>GPX-Download</dt>

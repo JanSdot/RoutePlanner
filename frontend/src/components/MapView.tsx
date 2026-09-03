@@ -89,6 +89,7 @@ interface MapViewProps {
   // Karten-Klick-Handler zum Hinzufügen (die Daten kommen aus dem Feed, nicht vom Nutzer).
   constructionClosures: ConstructionClosure[];
   ignoredClosureIds: Set<string>;
+  showConstructionClosures: boolean;
   showJunctions: boolean;
   // Fuer /junctions - MapView wird erst nach erfolgreichem Login gerendert (siehe App.tsx),
   // ein gueltiges Token ist an dieser Stelle daher immer vorhanden.
@@ -108,6 +109,7 @@ export function MapView({
   onAddRequiredPoint,
   constructionClosures,
   ignoredClosureIds,
+  showConstructionClosures,
   showJunctions,
   authToken,
 }: MapViewProps) {
@@ -122,6 +124,8 @@ export function MapView({
   onAddRequiredPointRef.current = onAddRequiredPoint;
   const showJunctionsRef = useRef(showJunctions);
   showJunctionsRef.current = showJunctions;
+  const showConstructionClosuresRef = useRef(showConstructionClosures);
+  showConstructionClosuresRef.current = showConstructionClosures;
   // MapLibre's "load" event fires exactly once per map instance. isStyleLoaded() can also
   // transiently report false during unrelated tile activity long after the initial load, so
   // neither is safe to re-check on every route update - track it ourselves instead.
@@ -287,7 +291,9 @@ export function MapView({
   // Fälle - analog zum roten BlockedArea-Kreis, aber automatisch befüllt statt vom Nutzer
   // gesetzt. Vom Nutzer ignorierte Einträge (siehe App.tsx toggleIgnoredClosure) werden stark
   // abgeblendet dargestellt statt entfernt, damit sichtbar bleibt, DASS dort eine erkannte
-  // Baustelle liegt, die der Nutzer bewusst übersteuert hat.
+  // Baustelle liegt, die der Nutzer bewusst übersteuert hat. Ein-/ausblendbar wie der
+  // Ampeln/Stoppschilder-Layer (initiale Sichtbarkeit hier gesetzt, weiteres Umschalten ueber
+  // den separaten Effekt unten, der nur die "visibility"-Layout-Property umschaltet).
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -322,6 +328,7 @@ export function MapView({
           id: "construction-closures-line",
           type: "line",
           source: "construction-closures-lines",
+          layout: { visibility: showConstructionClosuresRef.current ? "visible" : "none" },
           paint: {
             "line-color": CONSTRUCTION_CLOSURE_COLOR,
             "line-width": 5,
@@ -340,6 +347,7 @@ export function MapView({
           id: "construction-closures-circle",
           type: "circle",
           source: "construction-closures-points",
+          layout: { visibility: showConstructionClosuresRef.current ? "visible" : "none" },
           paint: {
             "circle-radius": 10,
             "circle-color": CONSTRUCTION_CLOSURE_COLOR,
@@ -414,6 +422,18 @@ export function MapView({
     if (!map || !map.getLayer("junctions-circle")) return;
     map.setLayoutProperty("junctions-circle", "visibility", showJunctions ? "visible" : "none");
   }, [showJunctions]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const visibility = showConstructionClosures ? "visible" : "none";
+    if (map.getLayer("construction-closures-line")) {
+      map.setLayoutProperty("construction-closures-line", "visibility", visibility);
+    }
+    if (map.getLayer("construction-closures-circle")) {
+      map.setLayoutProperty("construction-closures-circle", "visibility", visibility);
+    }
+  }, [showConstructionClosures]);
 
   useEffect(() => {
     const map = mapRef.current;
