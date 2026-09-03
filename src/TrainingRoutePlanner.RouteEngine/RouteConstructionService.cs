@@ -70,6 +70,13 @@ public sealed class RouteConstructionService(
     // exakt) die Auswahl nicht unnoetig verzerren.
     private const double DurationMismatchBadnessWeightMetersPerSecond = 10.0;
 
+    // "Gut genug" bei AUSSCHLIESSLICH Pflicht-Wegpunkten (kein explizites Untergrund-/
+    // Kreuzungs-Limit) - eine Streckenvariante muss die Trainingsdauer nicht exakt treffen, um
+    // sofort verwendet zu werden, nur nah genug (siehe hasExplicitLimit in BuildRouteAsync und
+    // CONCEPT.md Bugfix-Abschnitt zum Pflicht-Wegpunkt-Umweg-Bug).
+    private static readonly TimeSpan RequiredPointGoodEnoughDurationMismatch = TimeSpan.FromMinutes(2);
+    private static readonly double RequiredPointGoodEnoughDurationMismatchSeconds = RequiredPointGoodEnoughDurationMismatch.TotalSeconds;
+
     // Trennt "ruhige" Bloecke (GA1/GA2, hohe Toleranz) von "Effort"-Bloecken, die einen
     // dedizierten Korridor brauchen (EB/SB/VO2max/Sprint) - siehe ZoneBands in Domain.
     private const double DedicatedCorridorScoreCutoff = 5.0;
@@ -91,10 +98,17 @@ public sealed class RouteConstructionService(
             ? await windForecastClient.GetForecastAsync(request.StartPoint, plannedStartTime, ct)
             : null;
 
-        // Ohne jedes Limit keinen zusaetzlichen Versuch riskieren - das waere reine
-        // Verschwendung von GraphHopper-Anfragen fuer Kriterien, die niemand geprueft haben will.
-        if (request.MaxUnpavedSegmentMeters is null && request.MaxTotalUnpavedMeters is null
-            && request.MaxTotalRoughMeters is null && request.MaxDisruptiveJunctions is null)
+        // Ob ueberhaupt ein explizites Limit gesetzt ist (Untergrund/Kreuzungen). Pflicht-
+        // Wegpunkte lösen den Retry-Mechanismus ZUSAETZLICH aus, auch ohne jedes Limit: ein
+        // einzelner, vom natuerlichen Schleifenverlauf weit entfernter Pflicht-Wegpunkt kann je
+        // nach round_trip-Seed einen unterschiedlich grossen Umweg erzwingen (siehe
+        // AddRoughLoopAnchors) - mehrere Seeds durchzuprobieren und den mit der geringsten
+        // Distanzabweichung zu waehlen, statt den ersten beliebigen Seed zu nehmen, behebt den
+        // live gemeldeten Bug "es wird extra zum Punkt geroutet statt ihn zu integrieren, die
+        // Route ist laenger als gewuenscht" (siehe CONCEPT.md Bugfix-Abschnitt).
+        var hasExplicitLimit = request.MaxUnpavedSegmentMeters is not null || request.MaxTotalUnpavedMeters is not null
+            || request.MaxTotalRoughMeters is not null || request.MaxDisruptiveJunctions is not null;
+        if (!hasExplicitLimit && request.RequiredPoints.Count == 0)
             return await BuildRouteAttemptAsync(request, RoundTripSeedBase, wind, ct);
 
         // Mindestens 1, sonst wuerde eine versehentliche 0/negative Nutzereingabe die Schleife
@@ -139,7 +153,14 @@ public sealed class RouteConstructionService(
             var withinTotalLimit = request.MaxTotalUnpavedMeters is not double totalLimit || unpavedTotalMeters <= totalLimit;
             var withinRoughTotalLimit = request.MaxTotalRoughMeters is not double roughLimit || roughTotalMeters <= roughLimit;
             var withinJunctionLimit = request.MaxDisruptiveJunctions is not int juncLimit || junctionCount <= juncLimit;
-            if (withinSegmentLimit && withinTotalLimit && withinRoughTotalLimit && withinJunctionLimit)
+            // Ohne jedes explizite Limit (nur Pflicht-Wegpunkte ausgeloest) gibt es kein "haelt
+            // Grenzwerte ein" zu pruefen - stattdessen genuegt eine Variante, deren Gesamtdauer
+            // schon nah genug am Trainingsplan liegt, statt zwingend alle maxAttempts Seeds
+            // durchzuprobieren.
+            var isGoodEnough = hasExplicitLimit
+                ? withinSegmentLimit && withinTotalLimit && withinRoughTotalLimit && withinJunctionLimit
+                : durationMismatchSeconds <= RequiredPointGoodEnoughDurationMismatchSeconds;
+            if (isGoodEnough)
                 return result;
 
             if (stopwatch.Elapsed >= MaxSurfaceAvoidanceTimeBudget)
@@ -149,10 +170,14 @@ public sealed class RouteConstructionService(
         var warnings = bestResult!.Warnings.ToList();
         warnings.Add(new RouteWarning
         {
-            Message = $"Keine der {attemptsMade} probierten Streckenvarianten hielt die gesetzten " +
-                      "Grenzwerte (Untergrund/Kreuzungen) ein - die beste gefundene Variante " +
-                      $"({bestUnpavedTotalMeters:F0} m unbefestigt, {bestRoughTotalMeters:F0} m rauer Belag, " +
-                      $"{bestJunctionCount} Ampel-/Stopp-Kreuzungen) wurde stattdessen verwendet.",
+            Message = hasExplicitLimit
+                ? $"Keine der {attemptsMade} probierten Streckenvarianten hielt die gesetzten " +
+                  "Grenzwerte (Untergrund/Kreuzungen) ein - die beste gefundene Variante " +
+                  $"({bestUnpavedTotalMeters:F0} m unbefestigt, {bestRoughTotalMeters:F0} m rauer Belag, " +
+                  $"{bestJunctionCount} Ampel-/Stopp-Kreuzungen) wurde stattdessen verwendet."
+                : $"Der Pflicht-Wegpunkt liegt weit vom natürlichen Streckenverlauf entfernt - " +
+                  $"keine der {attemptsMade} probierten Streckenvarianten kam nah an die geplante " +
+                  "Trainingsdauer heran, die beste gefundene Variante wurde stattdessen verwendet.",
         });
         return new RouteResult
         {

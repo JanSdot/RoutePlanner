@@ -23,6 +23,12 @@ public class RouteConstructionServiceTests
         public List<int> RoundTripSeeds { get; } = [];
         public double RoundTripDistanceMeters { get; set; } = 20_000;
 
+        // Erlaubt Tests zu simulieren, dass unterschiedliche Streckenvarianten (Pflicht-Wegpunkt-
+        // Retry, siehe RouteConstructionService) unterschiedlich gut zur Trainingsdauer passen -
+        // Index = wievielter Aufruf von RouteThroughWaypointsAsync (0-basiert), NICHT der
+        // round_trip-Seed selbst (der wird an RouteThroughWaypointsAsync gar nicht durchgereicht).
+        public Func<int, double>? WaypointDistanceMetersByCallIndex { get; set; }
+
         // Default = 0, damit Tests, die die Anfahrt-Budget-Pruefung nicht betreffen, nicht
         // versehentlich eine Warnung ausloesen (extra Zeit wird dann negativ, nie > Budget).
         public TimeSpan FinalRouteTime { get; set; } = TimeSpan.Zero;
@@ -79,10 +85,12 @@ public class RouteConstructionServiceTests
             IReadOnlyList<GeoPoint> waypoints, IReadOnlyList<BlockedArea> blockedAreas,
             IReadOnlyList<ConstructionClosure>? constructionClosures = null, CancellationToken ct = default)
         {
+            var callIndex = WaypointCalls.Count;
             WaypointCalls.Add(waypoints);
             BlockedAreasReceived.Add(blockedAreas);
             ConstructionClosuresReceived.Add(constructionClosures ?? []);
-            return Task.FromResult(new GraphHopperRoute(RoundTripDistanceMeters, FinalRouteTime, waypoints, [], []));
+            var distance = WaypointDistanceMetersByCallIndex?.Invoke(callIndex) ?? RoundTripDistanceMeters;
+            return Task.FromResult(new GraphHopperRoute(distance, FinalRouteTime, waypoints, [], []));
         }
     }
 
@@ -718,8 +726,13 @@ public class RouteConstructionServiceTests
         });
 
         // Ein reiner GA1-Plan loest sonst NIE Wegpunkt-Routing aus (siehe QuietOnlyPlan-Tests) -
-        // ein Pflicht-Wegpunkt muss das trotzdem erzwingen.
-        var waypoints = Assert.Single(ghClient.WaypointCalls);
+        // ein Pflicht-Wegpunkt muss das trotzdem erzwingen. Mehrere Aufrufe sind hier erwartet
+        // (siehe RequiredPoint_WithoutEffortSteps_InsertsRoughLoopAnchors_NotJustThereAndBack -
+        // Pflicht-Wegpunkte loesen jetzt denselben Mehrfach-Seed-Retry wie Untergrund-/
+        // Kreuzungs-Limits aus), die Fake-Geometrie variiert aber nicht nach Seed, daher sind
+        // alle Aufrufe inhaltlich identisch - der erste reicht fuer diese Pruefung.
+        Assert.NotEmpty(ghClient.WaypointCalls);
+        var waypoints = ghClient.WaypointCalls[0];
         Assert.Equal(Start, waypoints[0]);
         Assert.Equal(Start, waypoints[^1]);
         Assert.Contains(requiredPoint, waypoints);
@@ -801,11 +814,80 @@ public class RouteConstructionServiceTests
             RequiredPoints = [farCorner],
         });
 
-        var waypoints = Assert.Single(ghClient.WaypointCalls);
+        // Pflicht-Wegpunkte loesen denselben Mehrfach-Seed-Retry wie Untergrund-/Kreuzungs-Limits
+        // aus (siehe RequiredPoints_AreInsertedAsWaypoints_EvenWithoutEffortSteps) - die
+        // Fake-Geometrie variiert nicht nach Seed, alle Aufrufe sind also inhaltlich identisch.
+        Assert.NotEmpty(ghClient.WaypointCalls);
+        var waypoints = ghClient.WaypointCalls[0];
         // Ohne den Fix waeren es genau 3 Punkte (Start, Pflicht-Wegpunkt, Start) - "hin und
         // zurueck". Mit dem Fix muessen zusaetzliche Anker aus der roughLoop-Geometrie
         // dazwischenliegen.
         Assert.True(waypoints.Count > 3, $"Erwartet zusaetzliche Anker-Wegpunkte, aber es waren nur {waypoints.Count}");
+    }
+
+    [Fact]
+    public async Task RequiredPoint_WithoutExplicitLimits_TriesMultipleSeeds_UntilDurationMatchesWell()
+    {
+        // Ergaenzt den Anker-Test oben: nicht nur die WEGPUNKTE muessen stimmen, der
+        // Retry-Mechanismus muss bei einem schlecht passenden ersten Seed auch tatsaechlich einen
+        // weiteren Seed probieren (siehe hasExplicitLimit-Zweig in BuildRouteAsync) - sonst
+        // bliebe der live gemeldete Umweg-Bug trotz Anker-Wegpunkten bestehen, wenn ausgerechnet
+        // der erste Seed einen grossen Umweg erzwingt.
+        var corridors = new FakeCorridorIndex();
+        var powerModel = new PowerSpeedModel();
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(20), Rider);
+        var speedMps = powerModel.SolveSpeedMps(step.TargetPowerWatts, Rider);
+        var matchingDistanceMeters = speedMps * step.Duration.TotalSeconds;
+
+        var ghClient = new FakeGraphHopperClient
+        {
+            // Aufruf 0 (erster Seed) weicht massiv ab (fuenffache Distanz) - Aufruf 1 (zweiter
+            // Seed) trifft die Trainingsdauer nahezu exakt.
+            WaypointDistanceMetersByCallIndex = index => index == 0 ? matchingDistanceMeters * 5 : matchingDistanceMeters,
+        };
+        var service = new RouteConstructionService(ghClient, corridors, powerModel, new FakeWindForecastClient());
+
+        var requiredPoint = new GeoPoint(52.5426187 + 0.02, 13.4763778 + 0.02);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            RequiredPoints = [requiredPoint],
+        });
+
+        Assert.Equal(2, ghClient.WaypointCalls.Count);
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Pflicht-Wegpunkt"));
+    }
+
+    [Fact]
+    public async Task RequiredPoint_WithoutExplicitLimits_AllSeedsBadlyMismatched_UsesBestAndWarns()
+    {
+        var corridors = new FakeCorridorIndex();
+        var powerModel = new PowerSpeedModel();
+        var step = ZoneResolver.FromZone(TrainingZone.GA1, TimeSpan.FromMinutes(20), Rider);
+        var speedMps = powerModel.SolveSpeedMps(step.TargetPowerWatts, Rider);
+        var matchingDistanceMeters = speedMps * step.Duration.TotalSeconds;
+
+        // JEDER Versuch weicht massiv ab - keiner ist "gut genug", der Retry-Mechanismus muss
+        // alle (Standard: 10) Versuche durchprobieren und den besten mit einer Warnung verwenden.
+        var ghClient = new FakeGraphHopperClient
+        {
+            WaypointDistanceMetersByCallIndex = _ => matchingDistanceMeters * 5,
+        };
+        var service = new RouteConstructionService(ghClient, corridors, powerModel, new FakeWindForecastClient());
+
+        var requiredPoint = new GeoPoint(52.5426187 + 0.02, 13.4763778 + 0.02);
+        var result = await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            RequiredPoints = [requiredPoint],
+        });
+
+        Assert.Equal(10, ghClient.WaypointCalls.Count);
+        Assert.Contains(result.Warnings, w => w.Message.Contains("Pflicht-Wegpunkt"));
     }
 
     [Fact]

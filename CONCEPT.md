@@ -1359,7 +1359,7 @@ per direkter MapLibre-Instanz-Inspektion bestätigt (73 echte Baustellen-Linien-
 `visibility` korrekt zwischen `visible`/`none` umschaltend) und zusätzlich per Screenshot
 (orange Baustellen-Linie sichtbar) verifiziert.
 
-## 6.31 Phase 2 — Bugfix: Pflicht-Wegpunkt ohne Effort-Schritt fuhr nur "hin und zurueck" (durchgeführt)
+## 6.31 Phase 2 — Bugfix: Pflicht-Wegpunkt ohne Effort-Schritt fuhr nur "hin und zurueck" (durchgeführt, in zwei Schritten)
 
 Nutzer meldete: "wenn man einen Punkt setzt, der zur Route gehören soll, wird nur zu dem Punkt
 geroutet und nicht weiter". Live nachgestellt (reiner 20min-GA1-Plan, ein Pflicht-Wegpunkt, kein
@@ -1398,6 +1398,48 @@ demselben Pflicht-Wegpunkt lieferte danach 15,7km (328 Geometriepunkte) statt zu
 nur 2 zufälligen Punkt-Wiederholungen (normale Kreuzungs-Overlaps) statt der vorherigen
 durchgängigen Spiegelung - zusätzlich per Screenshot (echte Schleife statt Hin-/Rückweg auf
 identischer Strecke) bestätigt.
+
+**Nutzer-Feedback nach diesem ersten Fix:** "es scheint, als würde extra zu dem Punkt geroutet
+anstatt den Punkt in die Route zu integrieren. Damit ist die Route länger als gewünscht." Live
+nachgemessen: derselbe 20min-Plan lieferte ohne Pflicht-Wegpunkt 9,86km, mit einem ~4,6km vom
+Start entfernten Pflicht-Wegpunkt aber 15,68km (28 statt 20 min) - mit einem Pflicht-Wegpunkt
+NAHE am natürlichen Schleifenverlauf blieb die Distanz dagegen fast unverändert (8,98km). Der
+Anker-Fix WAR also korrekt, löste aber nur die Hälfte des Problems: er verhindert das exakte
+Zurückfahren, verhindert aber nicht, dass ausgerechnet der ERSTE probierte `round_trip`-Seed
+zufällig in eine andere Richtung als den Pflicht-Wegpunkt zeigt und dadurch einen unnötig
+grossen Umweg erzwingt.
+
+Erster Lösungsversuch (verworfen): die `round_trip`-Zieldistanz vorab vergrössern, wenn ein
+Pflicht-Wegpunkt weiter entfernt liegt, als die geplante Distanz reichen würde. Live gegen das
+echte lokale GraphHopper kalibriert (round_trip.distance 9.860-25.000m rund um den
+Sportforum-Berlin-Startpunkt: tatsächliche Streckenlänge liegt durchgehend beim 2,6-2,9-fachen
+der erreichten Luftlinien-Distanz vom Start) - mit diesem Faktor (2,8) angewendet, wurde das
+Ergebnis für den konkreten Testfall aber PARADOXERWEISE noch schlechter (18,25km statt 15,68km):
+eine groessere Zieldistanz aendert zwar die Schleifengroesse, nicht aber zuverlaessig ihre
+RICHTUNG - GraphHoppers `round_trip` hat keinen Parameter, um die Schleife auf einen Zielpunkt
+hin auszurichten. Diese Aenderung wurde wieder verworfen.
+
+**Tatsächlicher zweiter Fix:** Pflicht-Wegpunkte lösen jetzt denselben Mehrfach-Seed-Retry-
+Mechanismus aus wie Untergrund-/Kreuzungs-Limits (`BuildRouteAsync`), auch wenn kein einziges
+explizites Limit gesetzt ist. Statt den ersten `round_trip`-Seed unbesehen zu übernehmen, werden
+bis zu `MaxRouteVariantAttempts` (Standard 10) Seeds durchprobiert; eine Variante gilt als "gut
+genug", sobald ihre Gesamtdauer nah genug (`RequiredPointGoodEnoughDurationMismatch` = 2
+Minuten) an der geplanten Trainingsdauer liegt - andernfalls wird nach allen Versuchen die
+Variante mit der geringsten Abweichung verwendet, mit einer neuen, eigenen Warnung ("Der
+Pflicht-Wegpunkt liegt weit vom natürlichen Streckenverlauf entfernt..."), die sich von der
+bestehenden Untergrund-/Kreuzungs-Warnung unterscheidet.
+
+Getestet: 2 neue Tests (mehrere Seeds werden probiert, bis einer gut genug passt; wenn KEINER
+gut genug passt, wird die beste Variante mit der neuen Warnung verwendet) - dafür bekam
+`FakeGraphHopperClient` einen neuen `WaypointDistanceMetersByCallIndex`-Hook, um pro
+Retry-Versuch unterschiedliche Ergebnisdistanzen zu simulieren. 2 bestehende Tests mussten
+angepasst werden (`Assert.Single(WaypointCalls)` galt nicht mehr, da Pflicht-Wegpunkte jetzt
+mehrere Versuche ausloesen koennen - die Fake-Geometrie variiert nicht nach Seed, daher sind
+alle Aufrufe inhaltlich identisch und der erste reicht fuer die Wegpunkt-Inhalts-Pruefung).
+Volle Testsuite: 92/92 grün. Live gegen den echten lokalen GraphHopper verifiziert: derselbe
+20min-Plan mit demselben, 4,6km entfernten Pflicht-Wegpunkt lieferte jetzt 11,87km/21min20s
+(≈7% über Plan) statt zuvor 15,68km/28min (≈57% über Plan) - in ~15s (mehrere Versuche
+innerhalb des 45s-Zeitbudgets).
 
 ## 7. Offene Punkte
 
