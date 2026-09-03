@@ -106,6 +106,8 @@ public sealed class GraphHopperClient(HttpClient http, string profile = "bike") 
             {
                 Surface = value,
                 Geometry = geometry.Skip(fromIndex).Take(toIndex - fromIndex + 1).ToList(),
+                FromIndex = fromIndex,
+                ToIndex = toIndex,
             });
         }
         return result;

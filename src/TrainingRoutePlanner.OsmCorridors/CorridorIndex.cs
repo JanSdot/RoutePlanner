@@ -1,3 +1,4 @@
+using System.Linq;
 using TrainingRoutePlanner.Domain;
 
 namespace TrainingRoutePlanner.OsmCorridors;
@@ -13,6 +14,7 @@ public sealed class CorridorIndex : ICorridorIndex
     private readonly List<CorridorProfile> _corridors;
     private readonly List<BoundingBox> _bboxes;
     private readonly Dictionary<(int, int), List<long>> _hardNodeGrid;
+    private readonly Dictionary<long, long> _hardNodeClusterRoot;
 
     private readonly record struct BoundingBox(double MinLat, double MaxLat, double MinLon, double MaxLon);
 
@@ -23,6 +25,18 @@ public sealed class CorridorIndex : ICorridorIndex
     // groesser als jede sinnvolle proximityMeters-Anfrage, damit ein 3x3-Nachbarzellen-Scan
     // garantiert alle Kandidaten findet, auch nahe an Zellgrenzen.
     private const double HardNodeGridCellMeters = 200.0;
+
+    // OSM modelliert eine einzelne reale Ampel-/Stopp-Kreuzung oft mit MEHREREN Knoten (ein
+    // Knoten je Anfahrt/Fahrspur, besonders bei groesseren Berliner Kreuzungen), die laut
+    // Recherche typischerweise wenige Meter bis ~20m auseinanderliegen. Live gemeldeter Bug:
+    // eine reale Route zeigte "57 Ampel-/Stopp-Kreuzungen" an, weil CountDisruptiveJunctionsNear
+    // urspruenglich nach roher OSM-Node-ID statt nach physischer Kreuzung deduplizierte - eine
+    // grosse Kreuzung mit 3-4 Signal-Knoten zaehlte entsprechend 3-4 mal. 20m als Cluster-Radius
+    // ist ein bewusster Kompromiss: gross genug, um die ueblichen Mehrfach-Knoten EINER Kreuzung
+    // zusammenzufassen, aber (ausser in sehr dicht bebauten Innenstadtbloecken) klein genug, um
+    // zwei tatsaechlich unterschiedliche, nahe beieinanderliegende Kreuzungen nicht faelschlich
+    // zu verschmelzen.
+    private const double JunctionClusterRadiusMeters = 20.0;
 
     internal CorridorIndex(RoadGraph graph)
     {
@@ -38,6 +52,7 @@ public sealed class CorridorIndex : ICorridorIndex
         }
 
         _hardNodeGrid = BuildHardNodeGrid(graph);
+        _hardNodeClusterRoot = BuildHardNodeClusters(graph, _hardNodeGrid);
     }
 
     /// <summary>Siehe <see cref="ICorridorIndex.CountDisruptiveJunctionsNear"/>.</summary>
@@ -65,7 +80,12 @@ public sealed class CorridorIndex : ICorridorIndex
             }
         }
 
-        return found.Count;
+        // Auf physische Kreuzungen statt roher OSM-Node-ID deduplizieren - siehe
+        // JunctionClusterRadiusMeters.
+        var clusters = new HashSet<long>();
+        foreach (var nodeId in found)
+            clusters.Add(_hardNodeClusterRoot[nodeId]);
+        return clusters.Count;
     }
 
     /// <summary>Siehe <see cref="ICorridorIndex.GetAllJunctions"/>.</summary>
@@ -97,6 +117,64 @@ public sealed class CorridorIndex : ICorridorIndex
             list.Add(nodeId);
         }
         return grid;
+    }
+
+    // Union-Find ueber alle Ampel-/Stopp-Knoten: zwei Knoten landen im selben Cluster, sobald
+    // eine Kette von Paaren mit je hoechstens JunctionClusterRadiusMeters Abstand sie verbindet
+    // (nicht nur direkte Paare - bei einer Kreuzung mit 3+ Signal-Knoten in einer Reihe reicht
+    // das, um trotzdem alle in EINEN Cluster zu bekommen). Nutzt dasselbe Bucket-Gitter wie
+    // CountDisruptiveJunctionsNear fuer die Kandidatensuche - die Gitterzelle (200m) ist deutlich
+    // groesser als der Cluster-Radius (20m), ein 3x3-Nachbarzellen-Scan findet also garantiert
+    // alle Kandidaten.
+    private static Dictionary<long, long> BuildHardNodeClusters(RoadGraph graph, Dictionary<(int, int), List<long>> grid)
+    {
+        var parent = new Dictionary<long, long>();
+        foreach (var nodeId in graph.HardNodes)
+            parent[nodeId] = nodeId;
+
+        long Find(long x)
+        {
+            while (parent[x] != x)
+            {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            return x;
+        }
+
+        void Union(long a, long b)
+        {
+            var rootA = Find(a);
+            var rootB = Find(b);
+            if (rootA != rootB)
+                parent[rootA] = rootB;
+        }
+
+        foreach (var nodeId in graph.HardNodes)
+        {
+            if (!graph.Coordinates.TryGetValue(nodeId, out var point))
+                continue;
+
+            var (cellX, cellY) = HardNodeGridCell(point);
+            for (var dx = -1; dx <= 1; dx++)
+            {
+                for (var dy = -1; dy <= 1; dy++)
+                {
+                    if (!grid.TryGetValue((cellX + dx, cellY + dy), out var candidates))
+                        continue;
+
+                    foreach (var otherNodeId in candidates)
+                    {
+                        if (otherNodeId <= nodeId)
+                            continue; // jedes Paar nur einmal betrachten
+                        if (GeoMath.HaversineMeters(point, graph.Coordinates[otherNodeId]) <= JunctionClusterRadiusMeters)
+                            Union(nodeId, otherNodeId);
+                    }
+                }
+            }
+        }
+
+        return graph.HardNodes.ToDictionary(nodeId => nodeId, Find);
     }
 
     private static (int, int) HardNodeGridCell(GeoPoint p) => (

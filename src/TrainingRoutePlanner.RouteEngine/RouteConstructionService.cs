@@ -301,36 +301,69 @@ public sealed class RouteConstructionService(
     /// <summary>Kombiniert Oberflaechen- (surface=unpaved/gravel/...) UND Rauhigkeits-Warnungen
     /// (smoothness=bad/very_bad/..., siehe CONCEPT.md 6.19 - z.B. Kopfsteinpflaster, das GraphHopper
     /// via surface=sett ohnehin schon erfasst, aber auch alter/rissiger Asphalt ohne surface-Tag)
-    /// zu EINER "wie viel unangenehmer Untergrund liegt auf dieser Route"-Bewertung. Ueberschneiden
-    /// sich beide Warnungen auf demselben physischen Abschnitt (surface- und smoothness-Details
-    /// nutzen unabhaengige Indexbereiche ueber dieselbe Geometrie), wird dieser Abschnitt bewusst
-    /// doppelt gezaehlt statt ihn ueber Geometrie-Indizes exakt zu verrechnen - wie bei
-    /// JunctionBadnessWeightMeters bewusst grob, und hier zusaetzlich in der SICHEREN Richtung:
-    /// eine Ueberschaetzung fuehrt hoechstens zu einem unnoetigen weiteren Versuch, eine
-    /// Unterschaetzung wuerde einen tatsaechlich zu schlechten Abschnitt durch die Nutzer-Grenzwerte
-    /// rutschen lassen.</summary>
+    /// zu EINER "wie viel unangenehmer Untergrund liegt auf dieser Route"-Bewertung.
+    ///
+    /// Frueher wurden ueberschneidende Abschnitte (z.B. Kopfsteinpflaster, das GLEICHZEITIG
+    /// surface=sett UND smoothness=bad traegt - genau der Fall, der 6.19/6.20 ueberhaupt erst
+    /// motiviert hat) bewusst doppelt gezaehlt, da surface- und smoothness-path_details
+    /// unabhaengige Indexbereiche ueber dieselbe Geometrie nutzen. Live gemeldeter Bug: eine
+    /// reale Route zeigte "3224 m unbefestigt" an, obwohl der tatsaechliche unbefestigte Anteil
+    /// nur rund die Haelfte davon war. Jeder SurfaceSegment kennt seit dem Fix seinen
+    /// From/ToIndex in der GraphHopper-Routen-Geometrie (siehe SurfaceSegment.FromIndex) -
+    /// dieselben Indizes ueber beide Listen hinweg identifizieren denselben physischen Punkt,
+    /// wodurch sich ueberschneidende Bereiche jetzt exakt (statt heuristisch) nur einmal
+    /// zaehlen lassen: alle "schlechten" Punkte beider Listen landen in einer nach Index
+    /// sortierten Map, zusammenhaengende Indexlaeufe werden zu einem einzigen Abschnitt
+    /// zusammengefasst und dessen Laenge einmalig ueber die tatsaechliche Geometrie gemessen.</summary>
     private static (double TotalUnpavedMeters, double MaxUnpavedSegmentMeters) EvaluateUnpavedSurfaces(
         IReadOnlyList<SurfaceSegment> surfaceSegments, IReadOnlyList<SurfaceSegment> smoothnessSegments)
     {
-        var (surfaceTotal, surfaceMax) = SumBadSegments(surfaceSegments, SurfaceClassifier.IsUnpaved);
-        var (smoothnessTotal, smoothnessMax) = SumBadSegments(smoothnessSegments, SurfaceClassifier.IsBadSmoothness);
-        return (surfaceTotal + smoothnessTotal, Math.Max(surfaceMax, smoothnessMax));
-    }
+        var pointsByIndex = new SortedDictionary<int, GeoPoint>();
+        CollectBadPoints(surfaceSegments, SurfaceClassifier.IsUnpaved, pointsByIndex);
+        CollectBadPoints(smoothnessSegments, SurfaceClassifier.IsBadSmoothness, pointsByIndex);
+        if (pointsByIndex.Count == 0)
+            return (0.0, 0.0);
 
-    private static (double Total, double MaxSegment) SumBadSegments(
-        IReadOnlyList<SurfaceSegment> segments, Func<string, bool> isBad)
-    {
         var total = 0.0;
         var maxSegment = 0.0;
+        var currentRun = new List<GeoPoint>();
+        var previousIndex = int.MinValue;
+
+        void FlushRun()
+        {
+            if (currentRun.Count < 2)
+            {
+                currentRun.Clear();
+                return;
+            }
+            var length = PolylineMath.TotalLengthMeters(currentRun);
+            total += length;
+            maxSegment = Math.Max(maxSegment, length);
+            currentRun = [];
+        }
+
+        foreach (var (index, point) in pointsByIndex)
+        {
+            if (index != previousIndex + 1)
+                FlushRun();
+            currentRun.Add(point);
+            previousIndex = index;
+        }
+        FlushRun();
+
+        return (total, maxSegment);
+    }
+
+    private static void CollectBadPoints(
+        IReadOnlyList<SurfaceSegment> segments, Func<string, bool> isBad, SortedDictionary<int, GeoPoint> pointsByIndex)
+    {
         foreach (var segment in segments)
         {
             if (!isBad(segment.Surface))
                 continue;
-            var length = PolylineMath.TotalLengthMeters(segment.Geometry);
-            total += length;
-            maxSegment = Math.Max(maxSegment, length);
+            for (var i = 0; i < segment.Geometry.Count; i++)
+                pointsByIndex[segment.FromIndex + i] = segment.Geometry[i];
         }
-        return (total, maxSegment);
     }
 
     /// <summary>Fragt round_trip an, verfeinert die pro-Schritt-Distanzen anhand des

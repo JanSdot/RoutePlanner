@@ -137,6 +137,28 @@ public class CorridorIndexTests
     }
 
     [Fact]
+    public void CountDisruptiveJunctionsNear_ClustersNearbyHardNodes_AsOnePhysicalIntersection()
+    {
+        var graph = new RoadGraph();
+        // Zwei Ampel-Knoten ~10m auseinander - typisch dafuer, wie OSM eine einzelne groessere
+        // Kreuzung mit je einem Signal-Knoten pro Anfahrt modelliert (siehe
+        // CorridorIndex.JunctionClusterRadiusMeters). Sollen als EINE physische Kreuzung
+        // zaehlen, nicht als zwei.
+        graph.SetCoordinate(1, new GeoPoint(52.500, 13.400000));
+        graph.SetCoordinate(2, new GeoPoint(52.500, 13.400147)); // ~10m oestlich von Knoten 1
+        graph.HardNodes.Add(1);
+        graph.HardNodes.Add(2);
+        graph.AddEdge(1, 2, 10, "residential");
+
+        var index = new CorridorIndex(graph);
+        var routeGeometry = new[] { new GeoPoint(52.500, 13.400000) };
+
+        var count = index.CountDisruptiveJunctionsNear(routeGeometry, proximityMeters: 30);
+
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
     public void CountDisruptiveJunctionsNear_EmptyGraph_ReturnsZero()
     {
         var graph = new RoadGraph();

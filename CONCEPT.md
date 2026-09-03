@@ -1290,3 +1290,47 @@ offene Brandenburg-Schnittstelle findet.
   Live-Karten-Ansicht für Menschen gefunden werden, keine bestätigte offene
   Programmierschnittstelle/GeoJSON-Download für Brandenburg-eigene Baustellen - müsste durch
   direkte Anfrage beim Landesbetrieb Straßenwesen Brandenburg geklärt werden.
+
+## 6.29 Phase 2 — Bugfix: überhöhte "unbefestigt"/Kreuzungs-Zahlen in Warnungen (durchgeführt)
+
+Nutzer meldete: eine heruntergeladene Route zeigte "3224 m unbefestigt, 57 Ampel-/Stopp-
+Kreuzungen" - kam ihm zu hoch vor. Recherche bestätigte zwei unabhängige, echte Ursachen (beide
+nur in der Warnung sichtbar, die erscheint, wenn KEIN Versuch der bis zu 10 Streckenvarianten
+die gesetzten Grenzwerte einhält, siehe 6.9/6.12/6.13 - zeigt die am wenigsten schlechte der
+gescheiterten Varianten):
+
+1. **Unbefestigt-Meter waren teilweise doppelt gezählt.** `EvaluateUnpavedSurfaces` summierte
+   Oberflächen- (`surface=...`) und Smoothness-Segmente (`smoothness=bad`, siehe 6.20)
+   UNABHÄNGIG auf - ein Abschnitt mit BEIDEN Tags gleichzeitig (z. B. Kopfsteinpflaster, genau
+   der Fall, der 6.20 motiviert hat) zählte doppelt. War in 6.20 bewusst als grobe, "sichere"
+   Überschätzung für die interne Retry-Entscheidung gedacht, wurde aber unverändert als
+   vermeintlich exakte Metergenauigkeit an den Nutzer weitergereicht.
+2. **Ampel-/Stopp-Kreuzungen zählten nach roher OSM-Node-ID statt nach physischer Kreuzung.**
+   `CorridorIndex.CountDisruptiveJunctionsNear` dedupliziert nur nach Node-ID - OSM modelliert
+   eine einzelne reale, größere Kreuzung aber oft mit mehreren Knoten (ein Signal-Knoten je
+   Anfahrt, wenige Meter bis ~20m auseinander, besonders in Berlin). Eine vom Nutzer als "eine
+   Ampel" erlebte Kreuzung konnte so 3-4-fach gezählt werden.
+
+**Umsetzt:**
+- `SurfaceSegment` (Domain) bekommt `FromIndex`/`ToIndex` - die GraphHopper-`path_details`-
+  Indizes des Segments in der Routen-Geometrie, von `GraphHopperClient` beim Parsen gesetzt.
+  `EvaluateUnpavedSurfaces` sammelt alle "schlechten" Punkte (Oberfläche ODER Smoothness) in
+  einer nach Index sortierten Map (dieselbe Karten-Position landet unabhängig von der Quelle auf
+  demselben Index), fasst zusammenhängende Indexläufe zu einem Abschnitt zusammen und misst
+  dessen Länge einmalig über die tatsächliche Geometrie - echte Überschneidungen werden dadurch
+  exakt (nicht mehr heuristisch) nur einmal gezählt, disjunkte Abschnitte weiterhin korrekt
+  addiert.
+- `CorridorIndex` bekommt einen Union-Find-Cluster über alle Ampel-/Stopp-Knoten
+  (`JunctionClusterRadiusMeters = 20.0`, dasselbe 200m-Bucket-Gitter wie die bestehende
+  Nachbarschaftssuche für die Kandidatenauswahl). `CountDisruptiveJunctionsNear` zählt jetzt
+  distinkte Cluster-Wurzeln statt distinkter Node-IDs unter den gefundenen Knoten. 20m ist ein
+  bewusster Kompromiss (deckt übliche Mehrfach-Knoten EINER Kreuzung ab, verschmilzt aber
+  normalerweise keine zwei tatsächlich unterschiedlichen, nahen Kreuzungen).
+
+Getestet: 2 neue Tests für `EvaluateUnpavedSurfaces` (überschneidende Abschnitte werden nur
+einmal gezählt; disjunkte Abschnitte weiterhin beide), 1 neuer Test für die Kreuzungs-
+Clusterung (zwei ~10m auseinanderliegende Knoten zählen als eine Kreuzung) - bestehende Tests
+(u. a. der 140m-Abstand-Test, der zwei tatsächlich getrennte Kreuzungen erwartet) bleiben
+unverändert grün. Volle Testsuite: 90/90 grün. `dotnet build` und `npm run build`
+(Frontend, unverändert kompatibel - die neuen `FromIndex`/`ToIndex`-Felder sind rein additiv)
+beide fehlerfrei.
