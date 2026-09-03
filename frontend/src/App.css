@@ -188,6 +188,13 @@
   cursor: pointer;
 }
 
+/* Vom Nutzer für diese Route ignorierte Baustelle (siehe CONCEPT.md 6.27) - visuell klar
+   von aktiv berücksichtigten Einträgen abgesetzt. */
+.point-list li.ignored {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
 .result {
   margin-top: 1.25rem;
   padding-top: 1rem;

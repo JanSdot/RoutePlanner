@@ -54,6 +54,22 @@ export interface BlockedArea {
   radiusMeters: number;
 }
 
+// Sperrgrad einer automatisch erkannten Baustelle (VIZ-Berlin-Feed) - siehe ClosureSeverity
+// (Backend). "keine Sperrung" taucht hier nie auf, die wird schon serverseitig herausgefiltert.
+export type ClosureSeverity = "Full" | "Directional";
+
+// Eine aktuell aktive, automatisch erkannte Baustellen-Sperrung - siehe ConstructionClosure
+// (Backend, CONCEPT.md Abschnitt 6.27). Geometry ist entweder ein einzelner Punkt oder eine
+// Punktfolge entlang der betroffenen Straße.
+export interface ConstructionClosure {
+  id: string;
+  street: string;
+  geometry: GeoPoint[];
+  severity: ClosureSeverity;
+  validFrom?: string | null;
+  validTo?: string | null;
+}
+
 export interface RiderProfileInput {
   ftpWatts: number;
   weightKg: number;
@@ -78,6 +94,9 @@ export interface RouteFormInput {
   // Punkte, durch die die Route zwingend fuehren soll - siehe RouteRequest.RequiredPoints
   // (Backend).
   requiredPoints: GeoPoint[];
+  // IDs automatisch erkannter Baustellen (siehe ConstructionClosure), die der Nutzer bewusst
+  // fuer DIESE Route ignorieren moechte - siehe RouteRequest.ConstructionClosures (Backend).
+  ignoredConstructionClosureIds: string[];
   // Wert eines <input type="datetime-local">, in der Browser-Lokalzeit (kein Zeitzonen-Wissen
   // im String selbst) - wird in api.ts vor dem Versand in UTC umgewandelt, siehe RouteRequest.
   // PlannedStartTime (Backend). null/leer = keine Windvorhersage.

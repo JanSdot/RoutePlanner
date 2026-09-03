@@ -208,7 +208,7 @@ public sealed class RouteConstructionService(
         waypoints.Add(request.StartPoint);
 
         var finalRoute = waypoints.Count > 2
-            ? await graphHopper.RouteThroughWaypointsAsync(waypoints, request.BlockedAreas, ct)
+            ? await graphHopper.RouteThroughWaypointsAsync(waypoints, request.BlockedAreas, request.ConstructionClosures, ct)
             : roughLoop;
 
         // finalRoute.Time ist GraphHoppers EIGENE Schaetzung (fester 25 km/h Profil-Speed, siehe
@@ -355,7 +355,7 @@ public sealed class RouteConstructionService(
         var stepHeadwinds = new double[steps.Count];
         var totalDistance = stepDistances.Sum();
 
-        var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, request.BlockedAreas, ct);
+        var roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, request.BlockedAreas, request.ConstructionClosures, ct);
 
         for (var iteration = 0; iteration < MaxDistanceRefinementIterations; iteration++)
         {
@@ -388,7 +388,7 @@ public sealed class RouteConstructionService(
             if (relativeChange < DistanceRefinementToleranceFraction)
                 break;
 
-            roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, request.BlockedAreas, ct);
+            roughLoop = await graphHopper.RoundTripAsync(request.StartPoint, totalDistance, roundTripSeed, request.BlockedAreas, request.ConstructionClosures, ct);
         }
 
         return (roughLoop, stepDistances, stepGradients, stepHeadwinds);

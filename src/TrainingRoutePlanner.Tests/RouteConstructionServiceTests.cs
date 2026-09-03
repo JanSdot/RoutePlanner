@@ -48,12 +48,17 @@ public class RouteConstructionServiceTests
 
         public List<IReadOnlyList<BlockedArea>> BlockedAreasReceived { get; } = [];
 
+        // Analog zu BlockedAreasReceived - siehe CONCEPT.md Abschnitt 6.27.
+        public List<IReadOnlyList<ConstructionClosure>> ConstructionClosuresReceived { get; } = [];
+
         public Task<GraphHopperRoute> RoundTripAsync(
-            GeoPoint start, double distanceMeters, int seed, IReadOnlyList<BlockedArea> blockedAreas, CancellationToken ct = default)
+            GeoPoint start, double distanceMeters, int seed, IReadOnlyList<BlockedArea> blockedAreas,
+            IReadOnlyList<ConstructionClosure>? constructionClosures = null, CancellationToken ct = default)
         {
             RoundTripDistanceRequests.Add(distanceMeters);
             RoundTripSeeds.Add(seed);
             BlockedAreasReceived.Add(blockedAreas);
+            ConstructionClosuresReceived.Add(constructionClosures ?? []);
 
             var geometry = GeometryFactory?.Invoke(distanceMeters) ?? new List<GeoPoint>
             {
@@ -71,10 +76,12 @@ public class RouteConstructionServiceTests
         }
 
         public Task<GraphHopperRoute> RouteThroughWaypointsAsync(
-            IReadOnlyList<GeoPoint> waypoints, IReadOnlyList<BlockedArea> blockedAreas, CancellationToken ct = default)
+            IReadOnlyList<GeoPoint> waypoints, IReadOnlyList<BlockedArea> blockedAreas,
+            IReadOnlyList<ConstructionClosure>? constructionClosures = null, CancellationToken ct = default)
         {
             WaypointCalls.Add(waypoints);
             BlockedAreasReceived.Add(blockedAreas);
+            ConstructionClosuresReceived.Add(constructionClosures ?? []);
             return Task.FromResult(new GraphHopperRoute(RoundTripDistanceMeters, FinalRouteTime, waypoints, [], []));
         }
     }
@@ -826,5 +833,30 @@ public class RouteConstructionServiceTests
 
         Assert.Single(windClient.Calls);
         Assert.Null(result.Wind);
+    }
+
+    // Siehe CONCEPT.md Abschnitt 6.27: automatisch erkannte Baustellen-Sperrungen muessen bei
+    // JEDER GraphHopper-Anfrage ankommen, genau wie BlockedAreas - RouteConstructionService
+    // reicht sie unveraendert durch, ohne sie selbst zu interpretieren.
+    [Fact]
+    public async Task ConstructionClosures_ArePassedThroughToRoundTripAndWaypointCalls()
+    {
+        var graphHopper = new FakeGraphHopperClient();
+        var corridors = new FakeCorridorIndex { Responder = _ => MakeCorridor() };
+        var service = new RouteConstructionService(graphHopper, corridors, new PowerSpeedModel(), new FakeWindForecastClient());
+        var closure = new ConstructionClosure(
+            "1/2026", "Beispielstraße", [new GeoPoint(52.55, 13.45)], ClosureSeverity.Full, null, null);
+
+        var step = ZoneResolver.FromZone(TrainingZone.SB, TimeSpan.FromMinutes(5), Rider); // Effort-Block, braucht einen Korridor -> waypoint-Route.
+        await service.BuildRouteAsync(new RouteRequest
+        {
+            StartPoint = Start,
+            Rider = Rider,
+            Plan = new TrainingPlan { Steps = [step] },
+            ConstructionClosures = [closure],
+        });
+
+        Assert.All(graphHopper.ConstructionClosuresReceived, received => Assert.Same(closure, Assert.Single(received)));
+        Assert.NotEmpty(graphHopper.WaypointCalls);
     }
 }

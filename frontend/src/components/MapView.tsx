@@ -3,7 +3,7 @@ import { Map as MapLibreMap, Marker, LngLatBounds, Popup } from "maplibre-gl";
 import type { StyleSpecification, GeoJSONSource, ExpressionSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { FeatureCollection, LineString, Point } from "geojson";
-import type { GeoPoint, RouteSegment, SurfaceSegment, BlockedArea, Junction } from "../types";
+import type { GeoPoint, RouteSegment, SurfaceSegment, BlockedArea, ConstructionClosure, Junction } from "../types";
 import { requestJunctions } from "../api";
 
 // Fester Radius fuer per Klick gesperrte Bereiche - kein UI-Element zum Anpassen, um die
@@ -46,6 +46,11 @@ const UNPAVED_SURFACES = new Set([
 ]);
 export const SURFACE_WARNING_COLOR = "#dc2626";
 
+// Baustellen-Sperrungen-Layer (VIZ Berlin, siehe CONCEPT.md 6.27) - orange statt rot, um sich
+// klar vom manuell gesperrten BlockedArea-Kreis (#dc2626) UND der Untergrund-Warnung
+// (SURFACE_WARNING_COLOR) zu unterscheiden.
+export const CONSTRUCTION_CLOSURE_COLOR = "#ea580c";
+
 function segmentColorExpression(labels: string[]): ExpressionSpecification | string {
   const uniqueLabels = [...new Set(labels)];
   // MapLibre's "match" requires at least one case/output pair - with zero labels (e.g. before
@@ -65,6 +70,11 @@ interface MapViewProps {
   onAddBlockedArea: (area: BlockedArea) => void;
   requiredPoints: GeoPoint[];
   onAddRequiredPoint: (point: GeoPoint) => void;
+  // Automatisch erkannte Baustellen-Sperrungen (VIZ Berlin, siehe CONCEPT.md Abschnitt 6.27) -
+  // rein anzeigend, anders als blockedAreas/requiredPoints gibt es hier keinen
+  // Karten-Klick-Handler zum Hinzufügen (die Daten kommen aus dem Feed, nicht vom Nutzer).
+  constructionClosures: ConstructionClosure[];
+  ignoredClosureIds: Set<string>;
   showJunctions: boolean;
   // Fuer /junctions - MapView wird erst nach erfolgreichem Login gerendert (siehe App.tsx),
   // ein gueltiges Token ist an dieser Stelle daher immer vorhanden.
@@ -81,6 +91,8 @@ export function MapView({
   onAddBlockedArea,
   requiredPoints,
   onAddRequiredPoint,
+  constructionClosures,
+  ignoredClosureIds,
   showJunctions,
   authToken,
 }: MapViewProps) {
@@ -254,6 +266,82 @@ export function MapView({
       map.once("load", applyRequiredPoints);
     }
   }, [requiredPoints]);
+
+  // Baustellen-Sperrungen-Layer (VIZ Berlin, CONCEPT.md 6.27): orange Linie entlang der Straße
+  // fuer Baustellen mit LineString-Geometrie, orange Kreis fuer die selteneren punktförmigen
+  // Fälle - analog zum roten BlockedArea-Kreis, aber automatisch befüllt statt vom Nutzer
+  // gesetzt. Vom Nutzer ignorierte Einträge (siehe App.tsx toggleIgnoredClosure) werden stark
+  // abgeblendet dargestellt statt entfernt, damit sichtbar bleibt, DASS dort eine erkannte
+  // Baustelle liegt, die der Nutzer bewusst übersteuert hat.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const applyConstructionClosures = () => {
+      const lineFeatures: FeatureCollection<LineString>["features"] = [];
+      const pointFeatures: FeatureCollection<Point>["features"] = [];
+      for (const closure of constructionClosures) {
+        const ignored = ignoredClosureIds.has(closure.id);
+        if (closure.geometry.length > 1) {
+          lineFeatures.push({
+            type: "Feature",
+            properties: { ignored },
+            geometry: { type: "LineString", coordinates: closure.geometry.map((p) => [p.lon, p.lat]) },
+          });
+        } else if (closure.geometry.length === 1) {
+          pointFeatures.push({
+            type: "Feature",
+            properties: { ignored },
+            geometry: { type: "Point", coordinates: [closure.geometry[0].lon, closure.geometry[0].lat] },
+          });
+        }
+      }
+
+      const lineGeojson: FeatureCollection<LineString> = { type: "FeatureCollection", features: lineFeatures };
+      const existingLineSource = map.getSource("construction-closures-lines") as GeoJSONSource | undefined;
+      if (existingLineSource) {
+        existingLineSource.setData(lineGeojson);
+      } else {
+        map.addSource("construction-closures-lines", { type: "geojson", data: lineGeojson });
+        map.addLayer({
+          id: "construction-closures-line",
+          type: "line",
+          source: "construction-closures-lines",
+          paint: {
+            "line-color": CONSTRUCTION_CLOSURE_COLOR,
+            "line-width": 5,
+            "line-opacity": ["case", ["get", "ignored"], 0.25, 0.85],
+          },
+        });
+      }
+
+      const pointGeojson: FeatureCollection<Point> = { type: "FeatureCollection", features: pointFeatures };
+      const existingPointSource = map.getSource("construction-closures-points") as GeoJSONSource | undefined;
+      if (existingPointSource) {
+        existingPointSource.setData(pointGeojson);
+      } else {
+        map.addSource("construction-closures-points", { type: "geojson", data: pointGeojson });
+        map.addLayer({
+          id: "construction-closures-circle",
+          type: "circle",
+          source: "construction-closures-points",
+          paint: {
+            "circle-radius": 10,
+            "circle-color": CONSTRUCTION_CLOSURE_COLOR,
+            "circle-opacity": ["case", ["get", "ignored"], 0.15, 0.45],
+            "circle-stroke-color": CONSTRUCTION_CLOSURE_COLOR,
+            "circle-stroke-width": 2,
+          },
+        });
+      }
+    };
+
+    if (styleReadyRef.current) {
+      applyConstructionClosures();
+    } else {
+      map.once("load", applyConstructionClosures);
+    }
+  }, [constructionClosures, ignoredClosureIds]);
 
   // Ampeln/Stoppschilder-Layer (CONCEPT.md 6.21): einmaliger Abruf pro Kartensitzung (nicht bei
   // jedem Ein-/Ausblenden neu geladen), Sichtbarkeit danach nur ueber die MapLibre-
