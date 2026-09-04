@@ -5,6 +5,7 @@ import type {
   ConstructionClosure,
   Junction,
   PendingMember,
+  PendingUser,
   RouteFormInput,
   RouteResult,
   SegmentLock,
@@ -141,21 +142,53 @@ export async function loginUser(email: string, password: string): Promise<AuthRe
     body: JSON.stringify({ email, password }),
   });
   if (!response.ok) {
+    // "pending_approval" kommt von Program.cs /auth/login, solange ein Administrator das Konto
+    // noch nicht freigegeben hat (siehe /admin/users/*) - eigener Fehlertext statt des
+    // generischen 401-Falls, damit klar ist, dass Adresse/Passwort stimmen.
+    if (response.status === 403) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (body?.error === "pending_approval") {
+        throw new Error("Dein Konto wartet noch auf Freigabe durch einen Administrator.");
+      }
+    }
     throw new Error(response.status === 401 ? "E-Mail oder Passwort ist falsch." : `Login fehlgeschlagen (HTTP ${response.status})`);
   }
   return (await response.json()) as AuthResponse;
 }
 
-// Validiert ein gespeichertes Token gegen das Backend (z.B. beim Laden der App) und liefert die
-// zugehoerige E-Mail - null bei abgelaufenem/ungueltigem Token, statt eines Fehlers, da das der
-// normale Fall bei einem alten localStorage-Token ist, kein wirklicher Fehlerzustand.
-export async function fetchCurrentUser(token: string): Promise<string | null> {
+// Validiert ein gespeichertes Token gegen das Backend (z.B. beim Laden der App) und liefert
+// E-Mail + Admin-Status - null bei abgelaufenem/ungueltigem Token, statt eines Fehlers, da das
+// der normale Fall bei einem alten localStorage-Token ist, kein wirklicher Fehlerzustand.
+export async function fetchCurrentUser(token: string): Promise<{ email: string; isAdmin: boolean } | null> {
   const response = await fetch(`${API_BASE_URL}/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!response.ok) return null;
-  const data = (await response.json()) as { email: string };
-  return data.email;
+  return (await response.json()) as { email: string; isAdmin: boolean };
+}
+
+// Konten, die auf manuelle Freigabe warten (siehe GET /admin/users/pending) - nur fuer
+// Administratoren sichtbar, das Backend liefert sonst 403.
+export async function fetchPendingUsers(token: string): Promise<PendingUser[]> {
+  const response = await fetch(`${API_BASE_URL}/admin/users/pending`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Abruf der offenen Konten fehlgeschlagen (HTTP ${response.status})`);
+  }
+  return (await response.json()) as PendingUser[];
+}
+
+export async function decideUser(token: string, userId: string, decision: "approve" | "reject"): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/admin/users/${userId}/${decision}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Aktion fehlgeschlagen (HTTP ${response.status})`);
+  }
 }
 
 export async function buildWorkoutFitFile(blocks: WorkoutBlockSpec[], token: string): Promise<File> {

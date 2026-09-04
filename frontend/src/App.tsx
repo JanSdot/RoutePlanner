@@ -6,6 +6,7 @@ import { HelpPanel } from "./components/HelpPanel";
 import { ConstructionClosuresPanel } from "./components/ConstructionClosuresPanel";
 import { ProfilePage } from "./components/ProfilePage";
 import { ClubPage } from "./components/ClubPage";
+import { AdminPage } from "./components/AdminPage";
 import {
   requestRoute,
   requestRouteGpx,
@@ -73,7 +74,7 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 type InputMode = "file" | "editor";
-type ActiveView = "planner" | "profile" | "club";
+type ActiveView = "planner" | "profile" | "club" | "admin";
 
 export default function App() {
   const [activeView, setActiveView] = useState<ActiveView>("planner");
@@ -139,6 +140,7 @@ export default function App() {
 
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authIsAdmin, setAuthIsAdmin] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   // Verhindert, dass beim Laden kurz das Login-Formular aufblitzt, waehrend ein gespeichertes
@@ -165,9 +167,10 @@ export default function App() {
       setAuthInitializing(false);
       return;
     }
-    fetchCurrentUser(storedToken).then(async (email) => {
-      if (email) {
-        setAuthEmail(email);
+    fetchCurrentUser(storedToken).then(async (user) => {
+      if (user) {
+        setAuthEmail(user.email);
+        setAuthIsAdmin(user.isAdmin);
         setAuthToken(storedToken);
         await loadProfile(storedToken);
       } else {
@@ -185,6 +188,7 @@ export default function App() {
       localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, result.token);
       setAuthToken(result.token);
       setAuthEmail(result.email);
+      setAuthIsAdmin(result.isAdmin);
       await loadProfile(result.token);
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
@@ -193,6 +197,9 @@ export default function App() {
     }
   }
 
+  // Kein Auto-Login-Erfolg zu erwarten, solange ein Administrator das frisch registrierte Konto
+  // noch nicht freigegeben hat (siehe Program.cs /auth/login "pending_approval") - der
+  // handleLogin-Aufruf hier liefert dann bewusst genau diese Fehlermeldung statt eines Tokens.
   async function handleRegister(email: string, password: string) {
     setAuthLoading(true);
     setAuthError(null);
@@ -209,6 +216,7 @@ export default function App() {
     localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
     setAuthToken(null);
     setAuthEmail(null);
+    setAuthIsAdmin(false);
   }
 
   // Rein informativ/additiv (siehe CONCEPT.md Abschnitt 6.27) - ein fehlgeschlagener Abruf soll
@@ -426,7 +434,14 @@ export default function App() {
           <button type="button" className={activeView === "club" ? "active" : ""} onClick={() => setActiveView("club")}>
             Verein
           </button>
+          {authIsAdmin && (
+            <button type="button" className={activeView === "admin" ? "active" : ""} onClick={() => setActiveView("admin")}>
+              Nutzerfreigabe
+            </button>
+          )}
         </nav>
+
+        {activeView === "admin" && authIsAdmin && <AdminPage authToken={authToken} />}
 
         {activeView === "profile" && (
           <ProfilePage

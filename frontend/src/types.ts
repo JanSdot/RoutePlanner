@@ -140,6 +140,14 @@ export interface WorkoutBlockSpec {
 export interface AuthResponse {
   token: string;
   email: string;
+  isAdmin: boolean;
+}
+
+// Ein Konto, das auf die manuelle Freigabe durch einen Administrator wartet - siehe
+// GET /admin/users/pending (Backend).
+export interface PendingUser {
+  id: string;
+  email: string;
 }
 
 // Vereine (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine", Stufe 2) - siehe

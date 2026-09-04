@@ -189,6 +189,24 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+// Manuelle Nutzerfreigabe statt Selbstbedienung (E-Mail-Verifizierung o.ae.) - der Betreiber
+// gibt jedes neu registrierte Konto einzeln frei (siehe /admin/users/*). Admin-Status haengt
+// bewusst nur an der E-Mail-Adresse aus Konfiguration statt an einer eigenen Rolle/Spalte -
+// das Konten-Feature nutzt ohnehin den unveraenderten IdentityUser ohne eigene Zusatzfelder
+// (siehe WattLoopDbContext), ein weiteres Rollen-Schema waere fuer die aktuell einzige
+// Betreiber-Person verfrueht.
+bool IsPlatformAdminEmail(string? email, IConfiguration configuration)
+{
+    if (string.IsNullOrEmpty(email))
+        return false;
+    var adminEmails = (configuration["PlatformAdmin:Emails"] ?? "")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    return adminEmails.Contains(email, StringComparer.OrdinalIgnoreCase);
+}
+
+bool IsPlatformAdmin(ClaimsPrincipal principal, IConfiguration configuration) =>
+    IsPlatformAdminEmail(principal.FindFirstValue(ClaimTypes.Email), configuration);
+
 app.MapGet("/health", () => Results.Ok());
 
 // Ampeln/Stoppschilder fuer den optionalen Kartenlayer (CONCEPT.md 6.21) - einmalig geladen,
@@ -243,21 +261,39 @@ app.Use(async (context, next) =>
 
 // E-Mail dient direkt als Identity-Username (kein separater Anzeigename noetig fuer Stufe 1
 // des Konten-Features, siehe CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine").
-app.MapPost("/auth/register", async (RegisterRequest request, UserManager<IdentityUser> userManager) =>
+// Login bleibt bis zur manuellen Freigabe gesperrt (siehe /auth/login, /admin/users/*) - der
+// Account existiert zwar schon direkt nach der Registrierung, ist aber erst nutzbar, nachdem
+// ein Administrator ihn freigegeben hat.
+app.MapPost("/auth/register", async (RegisterRequest request, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
 {
     var user = new IdentityUser { UserName = request.Email, Email = request.Email };
     var result = await userManager.CreateAsync(user, request.Password);
     if (!result.Succeeded)
         return Results.BadRequest(result.Errors.Select(e => e.Description));
+
+    // Identity's eigener Lockout-Mechanismus als Freigabe-Sperre zweckentfremdet, statt einer
+    // eigenen "IsApproved"-Spalte - spart eine Migration, und "dieser Nutzer darf sich nicht
+    // einloggen" ist exakt das, wofuer Lockout gedacht ist. MaxValue statt eines konkreten
+    // Datums, da es kein Zeitablauf ist, sondern ein manuelles Gate ohne Ablaufdatum. Konten mit
+    // einer konfigurierten Admin-Adresse werden NICHT gesperrt - sonst koennte sich der
+    // Betreiber bei einer frischen Registrierung selbst aussperren, ohne dass jemand da waere,
+    // der ihn freigeben koennte (siehe IsPlatformAdminEmail).
+    if (!IsPlatformAdminEmail(user.Email, configuration))
+        await userManager.SetLockoutEndDateAsync(user, DateTimeOffset.MaxValue);
     return Results.Ok();
 })
 .WithName("Register");
 
-app.MapPost("/auth/login", async (LoginRequest request, UserManager<IdentityUser> userManager) =>
+app.MapPost("/auth/login", async (LoginRequest request, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
 {
     var user = await userManager.FindByEmailAsync(request.Email);
     if (user is null || !await userManager.CheckPasswordAsync(user, request.Password))
         return Results.Unauthorized();
+    // Vor dem JWT-Ausstellen geprueft (nicht schon bei /auth/register verweigert), damit ein
+    // konkreter, vom Frontend erkennbarer Fehlercode zurueckkommt statt eines generischen 401 -
+    // siehe frontend/src/api.ts loginUser fuer die "pending_approval"-Auswertung.
+    if (await userManager.IsLockedOutAsync(user))
+        return Results.Json(new { error = "pending_approval" }, statusCode: StatusCodes.Status403Forbidden);
 
     var claims = new[]
     {
@@ -269,14 +305,67 @@ app.MapPost("/auth/login", async (LoginRequest request, UserManager<IdentityUser
     // reines E-Mail/Passwort-Login) reicht ein simples langlebiges Token, ein Refresh-Flow waere
     // hier verfrueht (siehe CONCEPT.md: Stufe 2/3 kommen erst noch).
     var token = new JwtSecurityToken(claims: claims, expires: DateTime.UtcNow.AddDays(30), signingCredentials: credentials);
-    return Results.Ok(new AuthResponse(new JwtSecurityTokenHandler().WriteToken(token), user.Email!));
+    return Results.Ok(new AuthResponse(new JwtSecurityTokenHandler().WriteToken(token), user.Email!, IsPlatformAdminEmail(user.Email, configuration)));
 })
 .WithName("Login");
 
-app.MapGet("/auth/me", (ClaimsPrincipal principal) =>
-    Results.Ok(new { email = principal.FindFirstValue(ClaimTypes.Email) }))
+app.MapGet("/auth/me", (ClaimsPrincipal principal, IConfiguration configuration) =>
+{
+    var email = principal.FindFirstValue(ClaimTypes.Email);
+    return Results.Ok(new { email, isAdmin = IsPlatformAdminEmail(email, configuration) });
+})
     .RequireAuthorization()
     .WithName("Me");
+
+// Freigabe-Warteschlange fuer neu registrierte Konten (siehe /auth/register) - nur der/die
+// Betreiber(in) (siehe IsPlatformAdmin) darf sie einsehen und entscheiden.
+app.MapGet("/admin/users/pending", async (ClaimsPrincipal principal, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var now = DateTimeOffset.UtcNow;
+    var pending = await userManager.Users
+        .Where(u => u.LockoutEnd != null && u.LockoutEnd > now)
+        .Select(u => new PendingUserDto(u.Id, u.Email!))
+        .ToListAsync();
+    return Results.Ok(pending);
+})
+.RequireAuthorization()
+.WithName("PendingUsers");
+
+app.MapPost("/admin/users/{id}/approve", async (string id, ClaimsPrincipal principal, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var user = await userManager.FindByIdAsync(id);
+    if (user is null)
+        return Results.NotFound();
+
+    await userManager.SetLockoutEndDateAsync(user, null);
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("ApproveUser");
+
+// Ablehnen loescht den Account direkt (statt ihn nur weiter gesperrt zu lassen) - ein
+// abgelehntes Konto kann ohnehin nie etwas tun, liegen lassen wuerde nur die
+// Freigabe-Warteschlange dauerhaft zumuellen.
+app.MapPost("/admin/users/{id}/reject", async (string id, ClaimsPrincipal principal, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var user = await userManager.FindByIdAsync(id);
+    if (user is null)
+        return Results.NotFound();
+
+    await userManager.DeleteAsync(user);
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("RejectUser");
 
 // Gespeichertes Fahrerprofil (FTP/Gewicht/Sprint-Watt) pro Nutzerkonto - erster konkreter Nutzen
 // eines eingeloggten Zustands, siehe CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/
@@ -895,7 +984,10 @@ internal sealed record RegisterRequest(string Email, string Password);
 
 internal sealed record LoginRequest(string Email, string Password);
 
-internal sealed record AuthResponse(string Token, string Email);
+internal sealed record AuthResponse(string Token, string Email, bool IsAdmin);
+
+// Siehe GET /admin/users/pending.
+internal sealed record PendingUserDto(string Id, string Email);
 
 // Siehe GET/PUT /profile - UserRiderProfile (Data) ohne UserId, das kommt aus dem JWT, nicht
 // vom Client.
