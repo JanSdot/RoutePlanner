@@ -255,6 +255,18 @@ export async function decideClub(token: string, clubId: string, decision: "appro
   }
 }
 
+// Loescht einen beliebigen (auch bereits freigegebenen) Verein - siehe DELETE /admin/clubs/{id}.
+export async function deleteClub(token: string, clubId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/admin/clubs/${clubId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Löschen fehlgeschlagen (HTTP ${response.status})`);
+  }
+}
+
 // Alle Vereine (nicht nur wartende) - siehe GET /admin/clubs (Backend).
 export async function fetchAllClubsForAdmin(token: string): Promise<AdminClub[]> {
   const response = await fetch(`${API_BASE_URL}/admin/clubs`, {

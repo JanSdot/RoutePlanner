@@ -519,6 +519,19 @@ app.MapPost("/admin/clubs/{clubId:guid}/approve", async (Guid clubId, ClaimsPrin
 .RequireAuthorization()
 .WithName("ApproveClub");
 
+// Gemeinsam genutzt von /admin/clubs/{clubId}/reject (noch nicht freigegebener Verein) UND
+// DELETE /admin/clubs/{clubId} (auch ein bereits freigegebener, aktiver Verein) - loescht den
+// Verein inklusive seiner Mitgliedschaften und Sperren, da beides ohne den Verein ohnehin
+// bedeutungslos waere und Club/ClubMembership/SegmentLock keine DB-seitigen Foreign Keys haben
+// (siehe DeletePlatformUserAsync-Kommentar oben - gleiches Muster).
+async Task DeleteClubAsync(WattLoopDbContext db, Club club)
+{
+    db.ClubMemberships.RemoveRange(db.ClubMemberships.Where(m => m.ClubId == club.Id));
+    db.SegmentLocks.RemoveRange(db.SegmentLocks.Where(s => s.ClubId == club.Id));
+    db.Clubs.Remove(club);
+    await db.SaveChangesAsync();
+}
+
 // Ablehnen loescht den Verein direkt, inklusive seiner (bis dahin nur vom Gruender gestellten)
 // Mitgliedschaften und Sperr-Vorschlaege - ein abgelehnter Verein war nie oeffentlich sichtbar
 // (siehe GET /clubs, das nur Approved zeigt), es gibt also nichts, das erhalten bleiben muesste.
@@ -531,14 +544,29 @@ app.MapPost("/admin/clubs/{clubId:guid}/reject", async (Guid clubId, ClaimsPrinc
     if (club is null)
         return Results.NotFound();
 
-    db.ClubMemberships.RemoveRange(db.ClubMemberships.Where(m => m.ClubId == clubId));
-    db.SegmentLocks.RemoveRange(db.SegmentLocks.Where(s => s.ClubId == clubId));
-    db.Clubs.Remove(club);
-    await db.SaveChangesAsync();
+    await DeleteClubAsync(db, club);
     return Results.Ok();
 })
 .RequireAuthorization()
 .WithName("RejectClub");
+
+// Loescht einen beliebigen Verein unabhaengig vom Freigabe-Status - anders als "reject" (nur
+// fuer noch nicht freigegebene Vereine gedacht) kann das auch einen laengst aktiven Verein
+// treffen, z.B. wenn er nicht mehr gebraucht wird oder falsch angelegt wurde.
+app.MapDelete("/admin/clubs/{clubId:guid}", async (Guid clubId, ClaimsPrincipal principal, WattLoopDbContext db, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var club = await db.Clubs.FindAsync(clubId);
+    if (club is null)
+        return Results.NotFound();
+
+    await DeleteClubAsync(db, club);
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("DeleteClub");
 
 // Alle Mitgliedschaften eines Vereins (nicht nur Pending wie /clubs/{clubId}/members/pending) -
 // Grundlage dafuer, dass ein Plattform-Administrator direkt Verantwortliche bestimmen kann, ohne

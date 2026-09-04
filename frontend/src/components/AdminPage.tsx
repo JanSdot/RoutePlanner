@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   decideClub,
   decideUser,
+  deleteClub,
   deleteUser,
   fetchAdminClubMembers,
   fetchAllClubsForAdmin,
@@ -106,6 +107,18 @@ export function AdminPage({ authToken }: AdminPageProps) {
     }
   }
 
+  async function handleDeleteClub(clubId: string, name: string) {
+    if (!window.confirm(`Verein "${name}" unwiderruflich löschen? Alle Mitgliedschaften und Sperren gehen dabei verloren.`)) return;
+    setError(null);
+    try {
+      await deleteClub(authToken, clubId);
+      reloadClubs();
+      if (selectedClubId === clubId) setSelectedClubId(null);
+    } catch (err) {
+      reportError(err);
+    }
+  }
+
   async function handleSetClubAdmin(membershipId: string, isAdmin: boolean) {
     if (!selectedClubId) return;
     setError(null);
@@ -200,6 +213,9 @@ export function AdminPage({ authToken }: AdminPageProps) {
                 onClick={() => setSelectedClubId(selectedClubId === club.id ? null : club.id)}
               >
                 {club.name} ({club.status === "Pending" ? "wartet" : `${club.memberCount} Mitglieder`})
+              </button>
+              <button type="button" onClick={() => handleDeleteClub(club.id, club.name)}>
+                Löschen
               </button>
             </li>
           ))}
