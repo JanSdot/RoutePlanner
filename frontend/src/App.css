@@ -200,6 +200,13 @@
   cursor: pointer;
 }
 
+/* Ausgewaehlter Verein in der Admin-Vereinsverwaltung (siehe AdminPage.tsx) - analog zu
+   .alternatives-list li.selected. */
+.point-list button.active {
+  background: #dbeafe;
+  font-weight: 600;
+}
+
 /* Vom Nutzer für diese Route ignorierte Baustelle (siehe CONCEPT.md 6.27) - visuell klar
    von aktiv berücksichtigten Einträgen abgesetzt. */
 .point-list li.ignored {

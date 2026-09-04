@@ -291,9 +291,12 @@ app.MapPost("/auth/login", async (LoginRequest request, UserManager<IdentityUser
         return Results.Unauthorized();
     // Vor dem JWT-Ausstellen geprueft (nicht schon bei /auth/register verweigert), damit ein
     // konkreter, vom Frontend erkennbarer Fehlercode zurueckkommt statt eines generischen 401 -
-    // siehe frontend/src/api.ts loginUser fuer die "pending_approval"-Auswertung.
+    // siehe frontend/src/api.ts loginUser. EmailConfirmed unterscheidet dabei "noch nie
+    // freigegeben" (pending_approval) von "war schon freigegeben, wurde aber nachtraeglich von
+    // einem Admin gesperrt" (suspended, siehe /admin/users/{id}/lock) - fachlich unterschiedliche
+    // Situationen, die im Frontend auch unterschiedlich formuliert werden sollen.
     if (await userManager.IsLockedOutAsync(user))
-        return Results.Json(new { error = "pending_approval" }, statusCode: StatusCodes.Status403Forbidden);
+        return Results.Json(new { error = user.EmailConfirmed ? "suspended" : "pending_approval" }, statusCode: StatusCodes.Status403Forbidden);
 
     var claims = new[]
     {
@@ -317,8 +320,28 @@ app.MapGet("/auth/me", (ClaimsPrincipal principal, IConfiguration configuration)
     .RequireAuthorization()
     .WithName("Me");
 
-// Freigabe-Warteschlange fuer neu registrierte Konten (siehe /auth/register) - nur der/die
-// Betreiber(in) (siehe IsPlatformAdmin) darf sie einsehen und entscheiden.
+// Loescht einen Account vollstaendig inkl. abhaengiger Daten - gemeinsam genutzt von
+// /admin/users/{id}/reject (Warteschlange) UND /admin/users/{id} (allgemeine Verwaltung), da
+// beides am Ende dieselbe Operation ist. Club/ClubMembership/SegmentLock haben KEINE
+// DB-seitigen Foreign Keys auf AspNetUsers (siehe WattLoopDbContext - reine EF-Konvention ohne
+// Navigationseigenschaften), Postgres wuerde beim Loeschen also keinen Fehler werfen, aber
+// verwaiste Zeilen zuruecklassen - deshalb hier explizit mit aufgeraeumt.
+async Task DeletePlatformUserAsync(WattLoopDbContext db, UserManager<IdentityUser> userManager, IdentityUser user)
+{
+    var profile = await db.UserRiderProfiles.FindAsync(user.Id);
+    if (profile is not null)
+        db.UserRiderProfiles.Remove(profile);
+    db.ClubMemberships.RemoveRange(db.ClubMemberships.Where(m => m.UserId == user.Id));
+    db.SegmentLocks.RemoveRange(db.SegmentLocks.Where(s => s.OwnerUserId == user.Id));
+    await db.SaveChangesAsync();
+    await userManager.DeleteAsync(user);
+}
+
+// Freigabe-Warteschlange fuer neu registrierte Konten (siehe /auth/register) - EmailConfirmed
+// (sonst ungenutzt) dient hier als "wurde schon MINDESTENS EINMAL freigegeben"-Merker, damit ein
+// nachtraeglich gesperrtes (siehe /admin/users/{id}/lock) Konto NICHT wieder faelschlich in
+// dieser Erstregistrierungs-Warteschlange auftaucht - nur der/die Betreiber(in) (siehe
+// IsPlatformAdmin) darf sie einsehen und entscheiden.
 app.MapGet("/admin/users/pending", async (ClaimsPrincipal principal, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
 {
     if (!IsPlatformAdmin(principal, configuration))
@@ -326,7 +349,7 @@ app.MapGet("/admin/users/pending", async (ClaimsPrincipal principal, UserManager
 
     var now = DateTimeOffset.UtcNow;
     var pending = await userManager.Users
-        .Where(u => u.LockoutEnd != null && u.LockoutEnd > now)
+        .Where(u => u.LockoutEnd != null && u.LockoutEnd > now && !u.EmailConfirmed)
         .Select(u => new PendingUserDto(u.Id, u.Email!))
         .ToListAsync();
     return Results.Ok(pending);
@@ -344,6 +367,8 @@ app.MapPost("/admin/users/{id}/approve", async (string id, ClaimsPrincipal princ
         return Results.NotFound();
 
     await userManager.SetLockoutEndDateAsync(user, null);
+    user.EmailConfirmed = true;
+    await userManager.UpdateAsync(user);
     return Results.Ok();
 })
 .RequireAuthorization()
@@ -352,7 +377,7 @@ app.MapPost("/admin/users/{id}/approve", async (string id, ClaimsPrincipal princ
 // Ablehnen loescht den Account direkt (statt ihn nur weiter gesperrt zu lassen) - ein
 // abgelehntes Konto kann ohnehin nie etwas tun, liegen lassen wuerde nur die
 // Freigabe-Warteschlange dauerhaft zumuellen.
-app.MapPost("/admin/users/{id}/reject", async (string id, ClaimsPrincipal principal, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
+app.MapPost("/admin/users/{id}/reject", async (string id, ClaimsPrincipal principal, UserManager<IdentityUser> userManager, WattLoopDbContext db, IConfiguration configuration) =>
 {
     if (!IsPlatformAdmin(principal, configuration))
         return Results.Forbid();
@@ -361,11 +386,200 @@ app.MapPost("/admin/users/{id}/reject", async (string id, ClaimsPrincipal princi
     if (user is null)
         return Results.NotFound();
 
-    await userManager.DeleteAsync(user);
+    await DeletePlatformUserAsync(db, userManager, user);
     return Results.Ok();
 })
 .RequireAuthorization()
 .WithName("RejectUser");
+
+// Allgemeine Nutzerverwaltung (nicht nur die Erstregistrierungs-Warteschlange oben) - listet
+// ALLE Konten mit einem abgeleiteten Status, damit das Frontend je nach Zustand die passenden
+// Aktionen (Freigeben/Sperren/Entsperren/Loeschen) anbieten kann. IsSelf verhindert im Frontend
+// versehentliches Sperren/Loeschen des eigenen, gerade eingeloggten Admin-Kontos.
+app.MapGet("/admin/users", async (ClaimsPrincipal principal, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var callerId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    var now = DateTimeOffset.UtcNow;
+    var users = await userManager.Users
+        .Select(u => new AdminUserDto(
+            u.Id,
+            u.Email!,
+            u.LockoutEnd != null && u.LockoutEnd > now
+                ? (u.EmailConfirmed ? "Suspended" : "PendingApproval")
+                : "Active",
+            u.Id == callerId))
+        .ToListAsync();
+    return Results.Ok(users);
+})
+.RequireAuthorization()
+.WithName("AllUsers");
+
+// Sperrt ein bereits freigegebenes Konto nachtraeglich (z.B. Regelverstoss) - im Unterschied zu
+// /auth/register setzt das NICHT EmailConfirmed zurueck, damit der Nutzer beim Entsperren nicht
+// faelschlich wieder in der Erstregistrierungs-Warteschlange landet.
+app.MapPost("/admin/users/{id}/lock", async (string id, ClaimsPrincipal principal, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+    if (id == principal.FindFirstValue(ClaimTypes.NameIdentifier))
+        return Results.BadRequest("Du kannst dich nicht selbst sperren.");
+
+    var user = await userManager.FindByIdAsync(id);
+    if (user is null)
+        return Results.NotFound();
+
+    await userManager.SetLockoutEndDateAsync(user, DateTimeOffset.MaxValue);
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("LockUser");
+
+app.MapPost("/admin/users/{id}/unlock", async (string id, ClaimsPrincipal principal, UserManager<IdentityUser> userManager, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var user = await userManager.FindByIdAsync(id);
+    if (user is null)
+        return Results.NotFound();
+
+    await userManager.SetLockoutEndDateAsync(user, null);
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("UnlockUser");
+
+app.MapDelete("/admin/users/{id}", async (string id, ClaimsPrincipal principal, UserManager<IdentityUser> userManager, WattLoopDbContext db, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+    if (id == principal.FindFirstValue(ClaimTypes.NameIdentifier))
+        return Results.BadRequest("Du kannst dich nicht selbst löschen.");
+
+    var user = await userManager.FindByIdAsync(id);
+    if (user is null)
+        return Results.NotFound();
+
+    await DeletePlatformUserAsync(db, userManager, user);
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("DeleteUser");
+
+// Vereins-Freigabe (siehe Club.Status) - analog zur Nutzerfreigabe oben, aber fuer den Verein
+// als Ganzes statt fuer einzelne Mitgliedschaften.
+app.MapGet("/admin/clubs/pending", async (ClaimsPrincipal principal, WattLoopDbContext db, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var pending = await (
+        from c in db.Clubs
+        where c.Status == ClubStatus.Pending
+        join m in db.ClubMemberships.Where(m => m.IsAdmin) on c.Id equals m.ClubId into admins
+        from admin in admins.DefaultIfEmpty()
+        join u in db.Users on admin.UserId equals u.Id into adminUsers
+        from adminUser in adminUsers.DefaultIfEmpty()
+        select new AdminPendingClubDto(c.Id, c.Name, adminUser != null ? adminUser.Email! : "?"))
+        .ToListAsync();
+    return Results.Ok(pending);
+})
+.RequireAuthorization()
+.WithName("PendingClubs");
+
+app.MapGet("/admin/clubs", async (ClaimsPrincipal principal, WattLoopDbContext db, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var clubs = await db.Clubs
+        .Select(c => new AdminClubDto(c.Id, c.Name, c.Status.ToString(), db.ClubMemberships.Count(m => m.ClubId == c.Id && m.Status == ClubMembershipStatus.Approved)))
+        .ToListAsync();
+    return Results.Ok(clubs);
+})
+.RequireAuthorization()
+.WithName("AllClubs");
+
+app.MapPost("/admin/clubs/{clubId:guid}/approve", async (Guid clubId, ClaimsPrincipal principal, WattLoopDbContext db, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var club = await db.Clubs.FindAsync(clubId);
+    if (club is null)
+        return Results.NotFound();
+
+    club.Status = ClubStatus.Approved;
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("ApproveClub");
+
+// Ablehnen loescht den Verein direkt, inklusive seiner (bis dahin nur vom Gruender gestellten)
+// Mitgliedschaften und Sperr-Vorschlaege - ein abgelehnter Verein war nie oeffentlich sichtbar
+// (siehe GET /clubs, das nur Approved zeigt), es gibt also nichts, das erhalten bleiben muesste.
+app.MapPost("/admin/clubs/{clubId:guid}/reject", async (Guid clubId, ClaimsPrincipal principal, WattLoopDbContext db, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var club = await db.Clubs.FindAsync(clubId);
+    if (club is null)
+        return Results.NotFound();
+
+    db.ClubMemberships.RemoveRange(db.ClubMemberships.Where(m => m.ClubId == clubId));
+    db.SegmentLocks.RemoveRange(db.SegmentLocks.Where(s => s.ClubId == clubId));
+    db.Clubs.Remove(club);
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("RejectClub");
+
+// Alle Mitgliedschaften eines Vereins (nicht nur Pending wie /clubs/{clubId}/members/pending) -
+// Grundlage dafuer, dass ein Plattform-Administrator direkt Verantwortliche bestimmen kann, ohne
+// selbst Mitglied oder bestehender Verantwortlicher des Vereins sein zu muessen.
+app.MapGet("/admin/clubs/{clubId:guid}/members", async (Guid clubId, ClaimsPrincipal principal, WattLoopDbContext db, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var members = await (
+        from m in db.ClubMemberships
+        join u in db.Users on m.UserId equals u.Id
+        where m.ClubId == clubId
+        select new AdminClubMemberDto(m.Id, u.Email!, m.Status.ToString(), m.IsAdmin))
+        .ToListAsync();
+    return Results.Ok(members);
+})
+.RequireAuthorization()
+.WithName("AdminClubMembers");
+
+// Setzt/entzieht den Verantwortlichen-Status direkt, unabhaengig vom sonst ueblichen
+// Freigabe-Fluss durch bestehende Verantwortliche (siehe /clubs/{clubId}/members/{id}/approve) -
+// die Plattform-Administration darf das jederzeit uebersteuern, z.B. wenn ein Verein keinen
+// aktiven Verantwortlichen mehr hat.
+app.MapPost("/admin/clubs/{clubId:guid}/members/{membershipId:guid}/set-admin", async (Guid clubId, Guid membershipId, SetClubAdminRequest request, ClaimsPrincipal principal, WattLoopDbContext db, IConfiguration configuration) =>
+{
+    if (!IsPlatformAdmin(principal, configuration))
+        return Results.Forbid();
+
+    var membership = await db.ClubMemberships.FirstOrDefaultAsync(m => m.Id == membershipId && m.ClubId == clubId);
+    if (membership is null)
+        return Results.NotFound();
+    if (membership.Status != ClubMembershipStatus.Approved)
+        return Results.BadRequest("Mitgliedschaft ist noch nicht genehmigt.");
+
+    membership.IsAdmin = request.IsAdmin;
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+.RequireAuthorization()
+.WithName("SetClubAdmin");
 
 // Gespeichertes Fahrerprofil (FTP/Gewicht/Sprint-Watt) pro Nutzerkonto - erster konkreter Nutzen
 // eines eingeloggten Zustands, siehe CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/
@@ -417,7 +631,10 @@ async Task<bool> IsClubAdminAsync(WattLoopDbContext db, Guid clubId, string user
 // Vereine (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine", Stufe 2) - ein
 // Nutzer ist zu jedem Zeitpunkt Mitglied/Anwaerter in hoechstens einem Verein (siehe den
 // eindeutigen Index auf ClubMembership.UserId), Beitritt braucht die Freigabe eines
-// Verantwortlichen.
+// Verantwortlichen. Der Verein selbst startet Pending und muss zusaetzlich von einem
+// Plattform-Administrator freigegeben werden (siehe /admin/clubs/*), bevor er in /clubs
+// auftaucht oder jemand beitreten kann - der Gruender kann seinen eigenen (noch nicht
+// freigegebenen) Verein trotzdem sofort ueber /clubs/mine sehen.
 app.MapPost("/clubs", async (CreateClubRequest request, ClaimsPrincipal principal, WattLoopDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(request.Name))
@@ -427,7 +644,7 @@ app.MapPost("/clubs", async (CreateClubRequest request, ClaimsPrincipal principa
     if (await db.ClubMemberships.AnyAsync(m => m.UserId == userId))
         return Results.Conflict("Du bist bereits Mitglied oder Anwärter eines Vereins.");
 
-    var club = new Club { Id = Guid.NewGuid(), Name = request.Name.Trim(), CreatedAt = DateTimeOffset.UtcNow };
+    var club = new Club { Id = Guid.NewGuid(), Name = request.Name.Trim(), CreatedAt = DateTimeOffset.UtcNow, Status = ClubStatus.Pending };
     db.Clubs.Add(club);
     // Der Ersteller wird sofort Verantwortlicher - ohne diesen Schritt gaebe es keinen einzigen
     // Verantwortlichen, der jemals einen Beitritt freigeben koennte.
@@ -451,6 +668,7 @@ app.MapPost("/clubs", async (CreateClubRequest request, ClaimsPrincipal principa
 app.MapGet("/clubs", async (WattLoopDbContext db) =>
 {
     var clubs = await db.Clubs
+        .Where(c => c.Status == ClubStatus.Approved)
         .Select(c => new ClubDto(c.Id, c.Name, db.ClubMemberships.Count(m => m.ClubId == c.Id && m.Status == ClubMembershipStatus.Approved)))
         .ToListAsync();
     return Results.Ok(clubs);
@@ -466,7 +684,7 @@ app.MapGet("/clubs/mine", async (ClaimsPrincipal principal, WattLoopDbContext db
         return Results.Ok((ClubMembershipDto?)null);
 
     var club = await db.Clubs.FindAsync(membership.ClubId);
-    return Results.Ok(new ClubMembershipDto(membership.ClubId, club!.Name, membership.Status.ToString(), membership.IsAdmin));
+    return Results.Ok(new ClubMembershipDto(membership.ClubId, club!.Name, membership.Status.ToString(), membership.IsAdmin, club.Status.ToString()));
 })
 .RequireAuthorization()
 .WithName("MyClubMembership");
@@ -476,7 +694,8 @@ app.MapPost("/clubs/{clubId:guid}/join", async (Guid clubId, ClaimsPrincipal pri
     var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
     if (await db.ClubMemberships.AnyAsync(m => m.UserId == userId))
         return Results.Conflict("Du bist bereits Mitglied oder Anwärter eines Vereins.");
-    if (!await db.Clubs.AnyAsync(c => c.Id == clubId))
+    var targetClub = await db.Clubs.FindAsync(clubId);
+    if (targetClub is null || targetClub.Status != ClubStatus.Approved)
         return Results.NotFound();
 
     db.ClubMemberships.Add(new ClubMembership
@@ -915,9 +1134,14 @@ app.MapPost("/route", async (
     // GraphHopperClient.BuildCustomModel unterscheidet nicht zwischen den Quellen - eine
     // gesperrte Kreisflaeche bleibt eine gesperrte Kreisflaeche, unabhaengig davon WARUM.
     var userId = principal.FindFirstValue(ClaimTypes.NameIdentifier)!;
-    var myApprovedClubId = await db.ClubMemberships
-        .Where(m => m.UserId == userId && m.Status == ClubMembershipStatus.Approved)
-        .Select(m => (Guid?)m.ClubId)
+    // Zusaetzlich zur eigenen Mitgliedschaft muss auch der Verein selbst schon freigegeben sein
+    // (siehe Club.Status) - ein noch nicht von der Plattform genehmigter Verein soll noch keine
+    // Wirkung auf Routenberechnungen haben.
+    var myApprovedClubId = await (
+        from m in db.ClubMemberships
+        join c in db.Clubs on m.ClubId equals c.Id
+        where m.UserId == userId && m.Status == ClubMembershipStatus.Approved && c.Status == ClubStatus.Approved
+        select (Guid?)m.ClubId)
         .FirstOrDefaultAsync();
     var persistedLocks = await db.SegmentLocks
         .Where(s => s.Status == SegmentLockStatus.Active
@@ -989,6 +1213,22 @@ internal sealed record AuthResponse(string Token, string Email, bool IsAdmin);
 // Siehe GET /admin/users/pending.
 internal sealed record PendingUserDto(string Id, string Email);
 
+// Siehe GET /admin/users - Status ist einer von "PendingApproval"/"Suspended"/"Active" (siehe
+// Endpunkt-Kommentar fuer die Herleitung aus LockoutEnd/EmailConfirmed).
+internal sealed record AdminUserDto(string Id, string Email, string Status, bool IsSelf);
+
+// Siehe GET /admin/clubs/pending.
+internal sealed record AdminPendingClubDto(Guid Id, string Name, string CreatorEmail);
+
+// Siehe GET /admin/clubs.
+internal sealed record AdminClubDto(Guid Id, string Name, string Status, int MemberCount);
+
+// Siehe GET /admin/clubs/{clubId}/members.
+internal sealed record AdminClubMemberDto(Guid MembershipId, string Email, string Status, bool IsAdmin);
+
+// Siehe POST /admin/clubs/{clubId}/members/{membershipId}/set-admin.
+internal sealed record SetClubAdminRequest(bool IsAdmin);
+
 // Siehe GET/PUT /profile - UserRiderProfile (Data) ohne UserId, das kommt aus dem JWT, nicht
 // vom Client.
 internal sealed record RiderProfileDto(double FtpWatts, double WeightKg, double SprintAvgWatts);
@@ -997,7 +1237,7 @@ internal sealed record RiderProfileDto(double FtpWatts, double WeightKg, double 
 // Vereine", Stufe 2).
 internal sealed record CreateClubRequest(string Name);
 internal sealed record ClubDto(Guid Id, string Name, int MemberCount);
-internal sealed record ClubMembershipDto(Guid ClubId, string ClubName, string Status, bool IsAdmin);
+internal sealed record ClubMembershipDto(Guid ClubId, string ClubName, string Status, bool IsAdmin, string ClubStatus);
 internal sealed record PendingMemberDto(Guid MembershipId, string Email, DateTimeOffset RequestedAt);
 
 // Siehe POST /segment-locks/* - persistierte Sperr-Bereiche (Stufe 3), analog zu

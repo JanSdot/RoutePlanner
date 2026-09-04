@@ -1,9 +1,13 @@
 import type {
+  AdminClub,
+  AdminClubMember,
+  AdminUser,
   AuthResponse,
   Club,
   ClubMembership,
   ConstructionClosure,
   Junction,
+  PendingClub,
   PendingMember,
   PendingUser,
   RouteFormInput,
@@ -142,13 +146,16 @@ export async function loginUser(email: string, password: string): Promise<AuthRe
     body: JSON.stringify({ email, password }),
   });
   if (!response.ok) {
-    // "pending_approval" kommt von Program.cs /auth/login, solange ein Administrator das Konto
-    // noch nicht freigegeben hat (siehe /admin/users/*) - eigener Fehlertext statt des
-    // generischen 401-Falls, damit klar ist, dass Adresse/Passwort stimmen.
+    // "pending_approval"/"suspended" kommen von Program.cs /auth/login (siehe /admin/users/*) -
+    // eigene Fehlertexte statt des generischen 401-Falls, damit klar ist, dass Adresse/Passwort
+    // stimmen und es stattdessen an der Konto-Freigabe liegt.
     if (response.status === 403) {
       const body = (await response.json().catch(() => null)) as { error?: string } | null;
       if (body?.error === "pending_approval") {
         throw new Error("Dein Konto wartet noch auf Freigabe durch einen Administrator.");
+      }
+      if (body?.error === "suspended") {
+        throw new Error("Dein Konto wurde von einem Administrator gesperrt.");
       }
     }
     throw new Error(response.status === 401 ? "E-Mail oder Passwort ist falsch." : `Login fehlgeschlagen (HTTP ${response.status})`);
@@ -184,6 +191,100 @@ export async function decideUser(token: string, userId: string, decision: "appro
   const response = await fetch(`${API_BASE_URL}/admin/users/${userId}/${decision}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Aktion fehlgeschlagen (HTTP ${response.status})`);
+  }
+}
+
+// Alle Konten (nicht nur wartende) - siehe GET /admin/users (Backend).
+export async function fetchAllUsers(token: string): Promise<AdminUser[]> {
+  const response = await fetch(`${API_BASE_URL}/admin/users`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Abruf der Nutzerliste fehlgeschlagen (HTTP ${response.status})`);
+  }
+  return (await response.json()) as AdminUser[];
+}
+
+export async function setUserLocked(token: string, userId: string, locked: boolean): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/admin/users/${userId}/${locked ? "lock" : "unlock"}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Aktion fehlgeschlagen (HTTP ${response.status})`);
+  }
+}
+
+export async function deleteUser(token: string, userId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/admin/users/${userId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Löschen fehlgeschlagen (HTTP ${response.status})`);
+  }
+}
+
+// Vereine, die auf Plattform-Freigabe warten - siehe GET /admin/clubs/pending (Backend).
+export async function fetchPendingClubs(token: string): Promise<PendingClub[]> {
+  const response = await fetch(`${API_BASE_URL}/admin/clubs/pending`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Abruf der offenen Vereine fehlgeschlagen (HTTP ${response.status})`);
+  }
+  return (await response.json()) as PendingClub[];
+}
+
+export async function decideClub(token: string, clubId: string, decision: "approve" | "reject"): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/admin/clubs/${clubId}/${decision}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Aktion fehlgeschlagen (HTTP ${response.status})`);
+  }
+}
+
+// Alle Vereine (nicht nur wartende) - siehe GET /admin/clubs (Backend).
+export async function fetchAllClubsForAdmin(token: string): Promise<AdminClub[]> {
+  const response = await fetch(`${API_BASE_URL}/admin/clubs`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Abruf der Vereinsliste fehlgeschlagen (HTTP ${response.status})`);
+  }
+  return (await response.json()) as AdminClub[];
+}
+
+// Alle Mitgliedschaften eines Vereins (nicht nur Pending) - siehe
+// GET /admin/clubs/{clubId}/members (Backend).
+export async function fetchAdminClubMembers(token: string, clubId: string): Promise<AdminClubMember[]> {
+  const response = await fetch(`${API_BASE_URL}/admin/clubs/${clubId}/members`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Abruf der Vereinsmitglieder fehlgeschlagen (HTTP ${response.status})`);
+  }
+  return (await response.json()) as AdminClubMember[];
+}
+
+export async function setClubMemberAdmin(token: string, clubId: string, membershipId: string, isAdmin: boolean): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/admin/clubs/${clubId}/members/${membershipId}/set-admin`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ isAdmin }),
   });
   if (!response.ok) {
     const text = await response.text();

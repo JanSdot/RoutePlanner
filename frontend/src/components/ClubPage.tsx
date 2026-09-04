@@ -141,6 +141,10 @@ export function ClubPage({ authToken, membership, onMembershipChange }: ClubPage
             </button>
           </p>
 
+          {membership.clubStatus === "Pending" && (
+            <p className="hint">Dieser Verein wartet noch auf die Freigabe durch die Plattform-Administration.</p>
+          )}
+
           <fieldset>
             <legend>Offene Sperr-Vorschläge für den Verein</legend>
             {pendingLocks.length === 0 && <p className="hint">Keine offenen Vorschläge.</p>}

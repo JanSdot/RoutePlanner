@@ -150,6 +150,15 @@ export interface PendingUser {
   email: string;
 }
 
+// Alle Nutzerkonten aus Admin-Sicht - siehe GET /admin/users (Backend). isSelf verhindert im
+// UI, dass sich der eingeloggte Admin selbst sperrt/loescht.
+export interface AdminUser {
+  id: string;
+  email: string;
+  status: "PendingApproval" | "Suspended" | "Active";
+  isSelf: boolean;
+}
+
 // Vereine (CONCEPT.md Phase-4-Backlog "Mehrbenutzerfähigkeit/Auth/Vereine", Stufe 2) - siehe
 // GET /clubs (Backend).
 export interface Club {
@@ -158,10 +167,36 @@ export interface Club {
   memberCount: number;
 }
 
-// Eigene Vereinsmitgliedschaft - siehe GET /clubs/mine (Backend). null = kein Verein.
+// Eigene Vereinsmitgliedschaft - siehe GET /clubs/mine (Backend). null = kein Verein. clubStatus
+// ist die Freigabe des VEREINS selbst (siehe AdminClub), unabhaengig vom eigenen status.
 export interface ClubMembership {
   clubId: string;
   clubName: string;
+  status: "Pending" | "Approved";
+  isAdmin: boolean;
+  clubStatus: "Pending" | "Approved";
+}
+
+// Ein auf Vereinsfreigabe wartender Verein - siehe GET /admin/clubs/pending (Backend).
+export interface PendingClub {
+  id: string;
+  name: string;
+  creatorEmail: string;
+}
+
+// Ein Verein aus Admin-Sicht (alle, nicht nur wartende) - siehe GET /admin/clubs (Backend).
+export interface AdminClub {
+  id: string;
+  name: string;
+  status: "Pending" | "Approved";
+  memberCount: number;
+}
+
+// Eine Mitgliedschaft aus Admin-Sicht (alle, nicht nur Pending) - siehe
+// GET /admin/clubs/{clubId}/members (Backend).
+export interface AdminClubMember {
+  membershipId: string;
+  email: string;
   status: "Pending" | "Approved";
   isAdmin: boolean;
 }
