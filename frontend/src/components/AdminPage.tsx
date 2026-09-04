@@ -206,27 +206,31 @@ export function AdminPage({ authToken }: AdminPageProps) {
         </ul>
 
         {selectedClubId && (
-          <ul className="point-list">
-            {clubMembers.map((member) => (
-              <li key={member.membershipId}>
-                {member.email} ({member.status}
-                {member.isAdmin ? ", Verantwortlicher" : ""})
-                {member.status === "Approved" && (
-                  <span>
-                    {member.isAdmin ? (
-                      <button type="button" onClick={() => handleSetClubAdmin(member.membershipId, false)}>
-                        Verantwortung entziehen
-                      </button>
-                    ) : (
-                      <button type="button" onClick={() => handleSetClubAdmin(member.membershipId, true)}>
-                        Zum Verantwortlichen machen
-                      </button>
-                    )}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
+          <>
+            <p className="hint">Mitglieder von {allClubs.find((c) => c.id === selectedClubId)?.name}:</p>
+            {clubMembers.length === 0 && <p className="hint">Keine Mitglieder.</p>}
+            <ul className="point-list">
+              {clubMembers.map((member) => (
+                <li key={member.membershipId}>
+                  {member.email} ({member.status}
+                  {member.isAdmin ? ", Verantwortlicher" : ""})
+                  {member.status === "Approved" && (
+                    <span>
+                      {member.isAdmin ? (
+                        <button type="button" onClick={() => handleSetClubAdmin(member.membershipId, false)}>
+                          Verantwortung entziehen
+                        </button>
+                      ) : (
+                        <button type="button" onClick={() => handleSetClubAdmin(member.membershipId, true)}>
+                          Zum Verantwortlichen machen
+                        </button>
+                      )}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </fieldset>
     </div>
